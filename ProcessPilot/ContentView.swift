@@ -85,6 +85,7 @@ struct ContentView: View {
 
 struct SidebarView: View {
     @ObservedObject var monitor: ProcessMonitor
+    @StateObject private var updateService = UpdateService()
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -100,6 +101,34 @@ struct SidebarView: View {
             }
             .padding(.horizontal)
             .padding(.top, 8)
+            
+            if let update = updateService.availableUpdate {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.app.fill")
+                        .foregroundColor(.accentColor)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("新しいバージョン")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(update.version)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    
+                    Spacer()
+                    
+                    Button("Update") {
+                        updateService.openUpdate()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.accentColor.opacity(0.08))
+                .cornerRadius(8)
+                .padding(.horizontal)
+            }
             
             Divider()
             
