@@ -176,6 +176,15 @@ struct SidebarView: View {
             Toggle("グループ化表示", isOn: $monitor.showGrouped)
                 .padding(.horizontal)
             
+            Toggle(
+                "使用量の多い順で表示",
+                isOn: Binding(
+                    get: { monitor.showHighUsageFirst },
+                    set: { monitor.changeHighUsageOrder($0) }
+                )
+            )
+            .padding(.horizontal)
+            
             Divider()
             
             // 統計情報
@@ -236,7 +245,6 @@ struct SidebarView: View {
         switch option {
         case .cpu: return "cpu"
         case .memory: return "memorychip"
-        case .name: return "textformat"
         }
     }
 }

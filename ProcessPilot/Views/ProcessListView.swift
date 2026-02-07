@@ -85,13 +85,13 @@ struct ProcessGroupView: View {
                         ResourceBadge(
                             icon: "cpu",
                             value: String(format: "%.1f%%", group.totalCPU),
-                            color: cpuColor(group.totalCPU)
+                            color: ProcessDisplayMetrics.cpuColor(for: group.totalCPU)
                         )
                         
                         ResourceBadge(
                             icon: "memorychip",
-                            value: formatMemory(group.totalMemory),
-                            color: memoryColor(group.totalMemory)
+                            value: ProcessDisplayMetrics.memoryText(for: group.totalMemory),
+                            color: ProcessDisplayMetrics.memoryColor(for: group.totalMemory)
                         )
                     }
                 }
@@ -130,25 +130,6 @@ struct ProcessGroupView: View {
             
             Divider()
         }
-    }
-    
-    private func cpuColor(_ value: Double) -> Color {
-        if value > 50 { return .red }
-        if value > 20 { return .orange }
-        return .green
-    }
-    
-    private func memoryColor(_ value: Double) -> Color {
-        if value > 1000 { return .red }
-        if value > 500 { return .orange }
-        return .green
-    }
-    
-    private func formatMemory(_ mb: Double) -> String {
-        if mb >= 1000 {
-            return String(format: "%.1f GB", mb / 1024)
-        }
-        return String(format: "%.0f MB", mb)
     }
 }
 

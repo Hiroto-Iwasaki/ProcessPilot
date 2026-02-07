@@ -96,7 +96,10 @@ struct ProcessDetailView: View {
                         
                         Circle()
                             .trim(from: 0, to: min(process.cpuUsage / 100, 1.0))
-                            .stroke(cpuColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                            .stroke(
+                                ProcessDisplayMetrics.cpuColor(for: process.cpuUsage),
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            )
                             .frame(width: 80, height: 80)
                             .rotationEffect(.degrees(-90))
                         
@@ -124,15 +127,18 @@ struct ProcessDetailView: View {
                         
                         Circle()
                             .trim(from: 0, to: min(process.memoryUsage / 8192, 1.0))
-                            .stroke(memoryColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                            .stroke(
+                                ProcessDisplayMetrics.memoryColor(for: process.memoryUsage),
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            )
                             .frame(width: 80, height: 80)
                             .rotationEffect(.degrees(-90))
                         
                         VStack(spacing: 0) {
-                            Text(formatMemoryValue(process.memoryUsage))
+                            Text(ProcessDisplayMetrics.memoryValue(for: process.memoryUsage))
                                 .font(.title3)
                                 .fontWeight(.bold)
-                            Text(formatMemoryUnit(process.memoryUsage))
+                            Text(ProcessDisplayMetrics.memoryUnit(for: process.memoryUsage))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -224,30 +230,6 @@ struct ProcessDetailView: View {
         }
     }
     
-    // MARK: - Helper Properties
-    
-    private var cpuColor: Color {
-        if process.cpuUsage > 50 { return .red }
-        if process.cpuUsage > 20 { return .orange }
-        return .green
-    }
-    
-    private var memoryColor: Color {
-        if process.memoryUsage > 1000 { return .red }
-        if process.memoryUsage > 500 { return .orange }
-        return .green
-    }
-    
-    private func formatMemoryValue(_ mb: Double) -> String {
-        if mb >= 1000 {
-            return String(format: "%.1f", mb / 1024)
-        }
-        return String(format: "%.0f", mb)
-    }
-    
-    private func formatMemoryUnit(_ mb: Double) -> String {
-        return mb >= 1000 ? "GB" : "MB"
-    }
 }
 
 // MARK: - Detail Row

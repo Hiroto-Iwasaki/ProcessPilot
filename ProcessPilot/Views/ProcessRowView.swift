@@ -57,25 +57,25 @@ struct ProcessRowView: View {
                     Text(String(format: "%.1f%%", process.cpuUsage))
                         .font(.caption)
                         .monospacedDigit()
-                        .foregroundColor(cpuColor)
+                        .foregroundColor(ProcessDisplayMetrics.cpuColor(for: process.cpuUsage))
                     
                     ProgressView(value: min(process.cpuUsage / 100, 1.0))
                         .progressViewStyle(.linear)
                         .frame(width: 50)
-                        .tint(cpuColor)
+                        .tint(ProcessDisplayMetrics.cpuColor(for: process.cpuUsage))
                 }
                 
                 // メモリ
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(formatMemory(process.memoryUsage))
+                    Text(ProcessDisplayMetrics.memoryText(for: process.memoryUsage))
                         .font(.caption)
                         .monospacedDigit()
-                        .foregroundColor(memoryColor)
+                        .foregroundColor(ProcessDisplayMetrics.memoryColor(for: process.memoryUsage))
                     
                     ProgressView(value: min(process.memoryUsage / 8192, 1.0)) // 8GB を 100% とする
                         .progressViewStyle(.linear)
                         .frame(width: 50)
-                        .tint(memoryColor)
+                        .tint(ProcessDisplayMetrics.memoryColor(for: process.memoryUsage))
                 }
             }
         }
@@ -90,25 +90,6 @@ struct ProcessRowView: View {
             return "gearshape.fill"
         }
         return "app.fill"
-    }
-    
-    private var cpuColor: Color {
-        if process.cpuUsage > 50 { return .red }
-        if process.cpuUsage > 20 { return .orange }
-        return .primary
-    }
-    
-    private var memoryColor: Color {
-        if process.memoryUsage > 1000 { return .red }
-        if process.memoryUsage > 500 { return .orange }
-        return .primary
-    }
-    
-    private func formatMemory(_ mb: Double) -> String {
-        if mb >= 1000 {
-            return String(format: "%.1f GB", mb / 1024)
-        }
-        return String(format: "%.0f MB", mb)
     }
 }
 

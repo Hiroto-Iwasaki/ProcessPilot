@@ -48,14 +48,39 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
             )
         ]
         
-        let sortedByCPU = ProcessSnapshotBuilder.sortProcesses(
+        let cpuHighFirst = ProcessSnapshotBuilder.sortProcesses(
             input,
             sortBy: .cpu,
-            filterText: ""
+            filterText: "",
+            showHighUsageFirst: true
         )
-        XCTAssertEqual(sortedByCPU.first?.pid, 10)
+        XCTAssertEqual(cpuHighFirst.first?.pid, 10)
         
-        let groups = ProcessSnapshotBuilder.groupProcesses(input, sortBy: .name)
+        let cpuLowFirst = ProcessSnapshotBuilder.sortProcesses(
+            input,
+            sortBy: .cpu,
+            filterText: "",
+            showHighUsageFirst: false
+        )
+        XCTAssertEqual(cpuLowFirst.first?.pid, 1)
+        
+        let memoryHighFirst = ProcessSnapshotBuilder.sortProcesses(
+            input,
+            sortBy: .memory,
+            filterText: "",
+            showHighUsageFirst: true
+        )
+        XCTAssertEqual(memoryHighFirst.first?.pid, 10)
+        
+        let memoryLowFirst = ProcessSnapshotBuilder.sortProcesses(
+            input,
+            sortBy: .memory,
+            filterText: "",
+            showHighUsageFirst: false
+        )
+        XCTAssertEqual(memoryLowFirst.first?.pid, 1)
+        
+        let groups = ProcessSnapshotBuilder.groupProcesses(input, sortBy: .cpu)
         XCTAssertTrue(groups.contains { $0.appName == "Safari" })
         XCTAssertTrue(groups.contains { $0.appName == "システム" })
     }

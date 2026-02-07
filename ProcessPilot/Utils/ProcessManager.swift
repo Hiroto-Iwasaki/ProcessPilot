@@ -12,32 +12,20 @@ struct ProcessManager {
     
     /// 通常終了（SIGTERM）
     static func terminateProcess(pid: Int32) -> TerminationResult {
-        let result = kill(pid, SIGTERM)
-        
-        if result == 0 {
-            return .success
-        } else if errno == EPERM {
-            return .permissionDenied
-        } else if errno == ESRCH {
-            return .processNotFound
-        } else {
-            return .failed("終了に失敗しました (errno: \(errno))")
-        }
+        sendSignal(
+            pid: pid,
+            signal: SIGTERM,
+            failureMessage: "終了に失敗しました"
+        )
     }
     
     /// 強制終了（SIGKILL）
     static func forceTerminateProcess(pid: Int32) -> TerminationResult {
-        let result = kill(pid, SIGKILL)
-        
-        if result == 0 {
-            return .success
-        } else if errno == EPERM {
-            return .permissionDenied
-        } else if errno == ESRCH {
-            return .processNotFound
-        } else {
-            return .failed("強制終了に失敗しました (errno: \(errno))")
-        }
+        sendSignal(
+            pid: pid,
+            signal: SIGKILL,
+            failureMessage: "強制終了に失敗しました"
+        )
     }
     
     /// システムプロセス警告を表示
@@ -109,5 +97,23 @@ struct ProcessManager {
         
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+    
+    private static func sendSignal(
+        pid: Int32,
+        signal: Int32,
+        failureMessage: String
+    ) -> TerminationResult {
+        let result = kill(pid, signal)
+        
+        if result == 0 {
+            return .success
+        } else if errno == EPERM {
+            return .permissionDenied
+        } else if errno == ESRCH {
+            return .processNotFound
+        } else {
+            return .failed("\(failureMessage) (errno: \(errno))")
+        }
     }
 }

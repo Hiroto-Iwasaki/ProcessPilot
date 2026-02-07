@@ -8,31 +8,31 @@ class ProcessMonitor: ObservableObject {
     @Published var isLoading = false
     @Published var sortBy: SortOption = .cpu
     @Published var showGrouped = true
-    @Published var filterText = ""
+    @Published var showHighUsageFirst = false
+    @Published var filterText = "" {
+        didSet {
+            applySortingAndGrouping()
+        }
+    }
+    
+    private var allProcesses: [AppProcessInfo] = []
     
     enum SortOption: String, CaseIterable, Sendable {
         case cpu = "CPU"
         case memory = "メモリ"
-        case name = "名前"
     }
     
     func refreshProcesses() async {
         guard !isLoading else { return }
         isLoading = true
         
-        let currentSortBy = sortBy
-        let currentFilterText = filterText
-        
         do {
-            let snapshot = try await Task.detached(priority: .utility) {
-                try ProcessSnapshotBuilder.build(
-                    sortBy: currentSortBy,
-                    filterText: currentFilterText
-                )
+            let fetchedProcesses = try await Task.detached(priority: .utility) {
+                try ProcessSnapshotBuilder.fetchProcesses()
             }.value
             
-            processes = snapshot.processes
-            groups = snapshot.groups
+            allProcesses = fetchedProcesses
+            applySortingAndGrouping()
         } catch {
             print("Error refreshing process list: \(error)")
         }
@@ -42,47 +42,64 @@ class ProcessMonitor: ObservableObject {
     
     func changeSortOption(_ option: SortOption) {
         sortBy = option
-        processes = ProcessSnapshotBuilder.sortProcesses(
-            processes,
+        applySortingAndGrouping()
+    }
+    
+    func changeHighUsageOrder(_ isEnabled: Bool) {
+        showHighUsageFirst = isEnabled
+        applySortingAndGrouping()
+    }
+    
+    private func applySortingAndGrouping() {
+        let visibleProcesses = ProcessSnapshotBuilder.sortProcesses(
+            allProcesses,
             sortBy: sortBy,
-            filterText: filterText
+            filterText: filterText,
+            showHighUsageFirst: showHighUsageFirst
         )
-        groups = ProcessSnapshotBuilder.groupProcesses(processes, sortBy: sortBy)
+        processes = visibleProcesses
+        groups = ProcessSnapshotBuilder.groupProcesses(
+            visibleProcesses,
+            sortBy: sortBy,
+            showHighUsageFirst: showHighUsageFirst
+        )
     }
 }
 
 enum ProcessSnapshotBuilder {
-    struct Snapshot: Sendable {
-        let processes: [AppProcessInfo]
-        let groups: [ProcessGroup]
-    }
-    
-    static func build(
-        sortBy: ProcessMonitor.SortOption,
-        filterText: String
-    ) throws -> Snapshot {
+    static func fetchProcesses() throws -> [AppProcessInfo] {
         let output = try runPS()
-        let parsed = parseProcesses(output)
-        let sorted = sortProcesses(parsed, sortBy: sortBy, filterText: filterText)
-        let groups = groupProcesses(sorted, sortBy: sortBy)
-        
-        return Snapshot(processes: sorted, groups: groups)
+        return parseProcesses(output)
     }
     
     static func sortProcesses(
         _ processes: [AppProcessInfo],
         sortBy: ProcessMonitor.SortOption,
-        filterText: String
+        filterText: String,
+        showHighUsageFirst: Bool = false
     ) -> [AppProcessInfo] {
         var sorted = processes
+        let descending = showHighUsageFirst
         
         switch sortBy {
         case .cpu:
-            sorted.sort { $0.cpuUsage > $1.cpuUsage }
+            orderCollection(
+                &sorted,
+                value: { $0.cpuUsage },
+                descending: descending,
+                tieBreaker: { lhs, rhs in
+                    lhs.name.lowercased() < rhs.name.lowercased()
+                }
+            )
         case .memory:
-            sorted.sort { $0.memoryUsage > $1.memoryUsage }
-        case .name:
-            sorted.sort { $0.name.lowercased() < $1.name.lowercased() }
+            orderCollection(
+                &sorted,
+                value: { $0.memoryUsage },
+                descending: descending,
+                tieBreaker: { lhs, rhs in
+                    lhs.name.lowercased() < rhs.name.lowercased()
+                }
+            )
         }
         
         if !filterText.isEmpty {
@@ -97,9 +114,11 @@ enum ProcessSnapshotBuilder {
     
     static func groupProcesses(
         _ processes: [AppProcessInfo],
-        sortBy: ProcessMonitor.SortOption
+        sortBy: ProcessMonitor.SortOption,
+        showHighUsageFirst: Bool = false
     ) -> [ProcessGroup] {
         var groupDict: [String: [AppProcessInfo]] = [:]
+        let descending = showHighUsageFirst
         
         for process in processes {
             let groupName = process.parentApp ?? (process.isSystemProcess ? "システム" : process.name)
@@ -113,14 +132,44 @@ enum ProcessSnapshotBuilder {
         
         switch sortBy {
         case .cpu:
-            groups.sort { $0.totalCPU > $1.totalCPU }
+            orderCollection(
+                &groups,
+                value: { $0.totalCPU },
+                descending: descending,
+                tieBreaker: { lhs, rhs in
+                    lhs.appName.lowercased() < rhs.appName.lowercased()
+                }
+            )
         case .memory:
-            groups.sort { $0.totalMemory > $1.totalMemory }
-        case .name:
-            groups.sort { $0.appName.lowercased() < $1.appName.lowercased() }
+            orderCollection(
+                &groups,
+                value: { $0.totalMemory },
+                descending: descending,
+                tieBreaker: { lhs, rhs in
+                    lhs.appName.lowercased() < rhs.appName.lowercased()
+                }
+            )
         }
         
         return groups
+    }
+    
+    private static func orderCollection<T, Value: Comparable>(
+        _ values: inout [T],
+        value: (T) -> Value,
+        descending: Bool,
+        tieBreaker: (T, T) -> Bool
+    ) {
+        values.sort { lhs, rhs in
+            let lhsValue = value(lhs)
+            let rhsValue = value(rhs)
+            
+            if lhsValue == rhsValue {
+                return tieBreaker(lhs, rhs)
+            }
+            
+            return descending ? lhsValue > rhsValue : lhsValue < rhsValue
+        }
     }
     
     private static func runPS() throws -> String {
