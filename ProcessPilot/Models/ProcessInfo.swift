@@ -1,7 +1,7 @@
 import Foundation
 
-struct AppProcessInfo: Identifiable, Hashable {
-    let id = UUID()
+struct AppProcessInfo: Identifiable, Hashable, Sendable {
+    var id: Int32 { pid }
     let pid: Int32
     let name: String
     let user: String

@@ -12,7 +12,7 @@ class ProcessMonitor: ObservableObject {
     
     private var timer: Timer?
     
-    enum SortOption: String, CaseIterable {
+    enum SortOption: String, CaseIterable, Sendable {
         case cpu = "CPU"
         case memory = "メモリ"
         case name = "名前"
@@ -42,109 +42,63 @@ class ProcessMonitor: ObservableObject {
     }
     
     func refreshProcesses() async {
+        guard !isLoading else { return }
         isLoading = true
         
-        let task = Process()
-        let pipe = Pipe()
-        
-        task.standardOutput = pipe
-        task.standardError = pipe
-        task.launchPath = "/bin/ps"
-        task.arguments = ["aux"]
+        let currentSortBy = sortBy
+        let currentFilterText = filterText
         
         do {
-            try task.run()
-            task.waitUntilExit()
+            let snapshot = try await Task.detached(priority: .utility) {
+                try ProcessSnapshotBuilder.build(
+                    sortBy: currentSortBy,
+                    filterText: currentFilterText
+                )
+            }.value
             
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                parseProcesses(output)
-            }
+            processes = snapshot.processes
+            groups = snapshot.groups
         } catch {
-            print("Error running ps: \(error)")
+            print("Error refreshing process list: \(error)")
         }
         
         isLoading = false
     }
     
-    private func parseProcesses(_ output: String) {
-        var newProcesses: [AppProcessInfo] = []
-        let lines = output.components(separatedBy: "\n")
-        
-        // ヘッダー行をスキップ
-        for line in lines.dropFirst() {
-            guard !line.isEmpty else { continue }
-            
-            let components = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard components.count >= 11 else { continue }
-            
-            let user = String(components[0])
-            guard let pid = Int32(components[1]) else { continue }
-            guard let cpu = Double(components[2]) else { continue }
-            guard let mem = Double(components[3]) else { continue }
-            
-            // プロセス名は最後の部分（パスの場合があるので抽出）
-            let commandPath = components[10...].joined(separator: " ")
-            let processName = extractProcessName(from: commandPath)
-            
-            // メモリ使用量をKBからMBに変換（RSSは4番目の列）
-            let memoryMB = mem * getPhysicalMemoryGB() * 10.24 // 概算
-            
-            let isSystem = ProcessDescriptions.isSystemProcess(processName)
-            let description = ProcessDescriptions.getDescription(for: processName)
-            let parentApp = extractParentApp(from: commandPath)
-            
-            let process = AppProcessInfo(
-                pid: pid,
-                name: processName,
-                user: user,
-                cpuUsage: cpu,
-                memoryUsage: memoryMB,
-                description: description,
-                isSystemProcess: isSystem,
-                parentApp: parentApp
-            )
-            
-            newProcesses.append(process)
-        }
-        
-        // ソート
-        processes = sortProcesses(newProcesses)
-        
-        // グループ化
-        groups = groupProcesses(processes)
+    func changeSortOption(_ option: SortOption) {
+        sortBy = option
+        processes = ProcessSnapshotBuilder.sortProcesses(
+            processes,
+            sortBy: sortBy,
+            filterText: filterText
+        )
+        groups = ProcessSnapshotBuilder.groupProcesses(processes, sortBy: sortBy)
+    }
+}
+
+enum ProcessSnapshotBuilder {
+    struct Snapshot: Sendable {
+        let processes: [AppProcessInfo]
+        let groups: [ProcessGroup]
     }
     
-    private func extractProcessName(from commandPath: String) -> String {
-        // パスからプロセス名を抽出
-        let path = commandPath.components(separatedBy: " ").first ?? commandPath
-        let name = path.components(separatedBy: "/").last ?? path
+    static func build(
+        sortBy: ProcessMonitor.SortOption,
+        filterText: String
+    ) throws -> Snapshot {
+        let output = try runPS()
+        let parsed = parseProcesses(output)
+        let sorted = sortProcesses(parsed, sortBy: sortBy, filterText: filterText)
+        let groups = groupProcesses(sorted, sortBy: sortBy)
         
-        // .app の場合は拡張子を除去
-        if name.hasSuffix(".app") {
-            return String(name.dropLast(4))
-        }
-        
-        return String(name.prefix(20)) // 長すぎる名前は切り詰め
+        return Snapshot(processes: sorted, groups: groups)
     }
     
-    private func extractParentApp(from commandPath: String) -> String? {
-        // .app が含まれていればアプリ名を抽出
-        if let range = commandPath.range(of: ".app") {
-            let beforeApp = commandPath[..<range.lowerBound]
-            let components = beforeApp.components(separatedBy: "/")
-            if let appName = components.last {
-                return appName
-            }
-        }
-        return nil
-    }
-    
-    private func getPhysicalMemoryGB() -> Double {
-        return Double(Foundation.ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
-    }
-    
-    private func sortProcesses(_ processes: [AppProcessInfo]) -> [AppProcessInfo] {
+    static func sortProcesses(
+        _ processes: [AppProcessInfo],
+        sortBy: ProcessMonitor.SortOption,
+        filterText: String
+    ) -> [AppProcessInfo] {
         var sorted = processes
         
         switch sortBy {
@@ -156,7 +110,6 @@ class ProcessMonitor: ObservableObject {
             sorted.sort { $0.name.lowercased() < $1.name.lowercased() }
         }
         
-        // フィルタリング
         if !filterText.isEmpty {
             sorted = sorted.filter {
                 $0.name.localizedCaseInsensitiveContains(filterText) ||
@@ -167,7 +120,10 @@ class ProcessMonitor: ObservableObject {
         return sorted
     }
     
-    private func groupProcesses(_ processes: [AppProcessInfo]) -> [ProcessGroup] {
+    static func groupProcesses(
+        _ processes: [AppProcessInfo],
+        sortBy: ProcessMonitor.SortOption
+    ) -> [ProcessGroup] {
         var groupDict: [String: [AppProcessInfo]] = [:]
         
         for process in processes {
@@ -180,7 +136,6 @@ class ProcessMonitor: ObservableObject {
         
         var groups = groupDict.map { ProcessGroup(appName: $0.key, processes: $0.value) }
         
-        // 合計リソース使用量でソート
         switch sortBy {
         case .cpu:
             groups.sort { $0.totalCPU > $1.totalCPU }
@@ -193,9 +148,97 @@ class ProcessMonitor: ObservableObject {
         return groups
     }
     
-    func changeSortOption(_ option: SortOption) {
-        sortBy = option
-        processes = sortProcesses(processes)
-        groups = groupProcesses(processes)
+    private static func runPS() throws -> String {
+        let task = Process()
+        let pipe = Pipe()
+        
+        task.standardOutput = pipe
+        task.standardError = pipe
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["aux"]
+        
+        try task.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        
+        guard task.terminationStatus == 0 else {
+            throw NSError(
+                domain: "ProcessSnapshotBuilder",
+                code: Int(task.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "ps command exited with status \(task.terminationStatus)."]
+            )
+        }
+        
+        guard let output = String(data: data, encoding: .utf8) else {
+            throw NSError(
+                domain: "ProcessSnapshotBuilder",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to decode ps output."]
+            )
+        }
+        
+        return output
+    }
+    
+    static func parseProcesses(_ output: String) -> [AppProcessInfo] {
+        var newProcesses: [AppProcessInfo] = []
+        let lines = output.components(separatedBy: "\n")
+        
+        for line in lines.dropFirst() {
+            guard !line.isEmpty else { continue }
+            
+            let components = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard components.count >= 11 else { continue }
+            
+            let user = String(components[0])
+            guard let pid = Int32(components[1]) else { continue }
+            guard let cpu = Double(components[2]) else { continue }
+            guard let mem = Double(components[3]) else { continue }
+            
+            let commandPath = components[10...].joined(separator: " ")
+            let processName = extractProcessName(from: commandPath)
+            let memoryMB = mem * getPhysicalMemoryGB() * 10.24
+            
+            let process = AppProcessInfo(
+                pid: pid,
+                name: processName,
+                user: user,
+                cpuUsage: cpu,
+                memoryUsage: memoryMB,
+                description: ProcessDescriptions.getDescription(for: processName),
+                isSystemProcess: ProcessDescriptions.isSystemProcess(processName),
+                parentApp: extractParentApp(from: commandPath)
+            )
+            
+            newProcesses.append(process)
+        }
+        
+        return newProcesses
+    }
+    
+    private static func extractProcessName(from commandPath: String) -> String {
+        let path = commandPath.components(separatedBy: " ").first ?? commandPath
+        let name = path.components(separatedBy: "/").last ?? path
+        
+        if name.hasSuffix(".app") {
+            return String(name.dropLast(4))
+        }
+        
+        return String(name.prefix(20))
+    }
+    
+    private static func extractParentApp(from commandPath: String) -> String? {
+        if let range = commandPath.range(of: ".app") {
+            let beforeApp = commandPath[..<range.lowerBound]
+            let components = beforeApp.components(separatedBy: "/")
+            if let appName = components.last {
+                return appName
+            }
+        }
+        return nil
+    }
+    
+    private static func getPhysicalMemoryGB() -> Double {
+        Double(Foundation.ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
     }
 }

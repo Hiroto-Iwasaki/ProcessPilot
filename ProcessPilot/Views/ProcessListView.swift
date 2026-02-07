@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ProcessListView: View {
     @ObservedObject var monitor: ProcessMonitor
-    @Binding var selectedProcess: AppProcessInfo?
+    @Binding var selectedPID: Int32?
     
     var body: some View {
         ScrollView {
@@ -12,7 +12,7 @@ struct ProcessListView: View {
                     ForEach(monitor.groups) { group in
                         ProcessGroupView(
                             group: group,
-                            selectedProcess: $selectedProcess
+                            selectedPID: $selectedPID
                         )
                     }
                 } else {
@@ -20,10 +20,10 @@ struct ProcessListView: View {
                     ForEach(monitor.processes) { process in
                         ProcessRowView(
                             process: process,
-                            isSelected: selectedProcess?.pid == process.pid
+                            isSelected: selectedPID == process.pid
                         )
                         .onTapGesture {
-                            selectedProcess = process
+                            selectedPID = process.pid
                         }
                         
                         Divider()
@@ -41,7 +41,7 @@ struct ProcessListView: View {
 
 struct ProcessGroupView: View {
     let group: ProcessGroup
-    @Binding var selectedProcess: AppProcessInfo?
+    @Binding var selectedPID: Int32?
     @State private var isExpanded = false
     
     var body: some View {
@@ -113,12 +113,12 @@ struct ProcessGroupView: View {
                             
                             ProcessRowView(
                                 process: process,
-                                isSelected: selectedProcess?.pid == process.pid,
+                                isSelected: selectedPID == process.pid,
                                 isNested: true
                             )
                         }
                         .onTapGesture {
-                            selectedProcess = process
+                            selectedPID = process.pid
                         }
                         
                         Divider()
@@ -178,6 +178,6 @@ struct ResourceBadge: View {
 #Preview {
     ProcessListView(
         monitor: ProcessMonitor(),
-        selectedProcess: .constant(nil)
+        selectedPID: .constant(nil)
     )
 }

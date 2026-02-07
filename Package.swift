@@ -12,7 +12,16 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "ProcessPilot",
-            path: "ProcessPilot"
+            path: "ProcessPilot",
+            exclude: [
+                "Assets.xcassets",
+                "ProcessPilot.entitlements"
+            ]
+        ),
+        .testTarget(
+            name: "ProcessPilotTests",
+            dependencies: ["ProcessPilot"],
+            path: "Tests/ProcessPilotTests"
         )
     ]
 )

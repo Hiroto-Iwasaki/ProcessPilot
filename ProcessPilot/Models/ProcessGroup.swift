@@ -1,7 +1,7 @@
 import Foundation
 
-struct ProcessGroup: Identifiable {
-    let id = UUID()
+struct ProcessGroup: Identifiable, Sendable {
+    var id: String { appName }
     let appName: String
     var processes: [AppProcessInfo]
     

@@ -2,8 +2,12 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var monitor = ProcessMonitor()
-    @State private var selectedProcess: AppProcessInfo?
-    @State private var showingDetail = false
+    @State private var selectedPID: Int32?
+    
+    private var selectedProcess: AppProcessInfo? {
+        guard let selectedPID else { return nil }
+        return monitor.processes.first { $0.pid == selectedPID }
+    }
     
     var body: some View {
         NavigationSplitView {
@@ -14,7 +18,7 @@ struct ContentView: View {
             // メインコンテンツ
             ProcessListView(
                 monitor: monitor,
-                selectedProcess: $selectedProcess
+                selectedPID: $selectedPID
             )
             .frame(minWidth: 400)
         } detail: {
@@ -32,6 +36,12 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 600)
+        .onChange(of: monitor.processes) { _ in
+            guard let selectedPID else { return }
+            if !monitor.processes.contains(where: { $0.pid == selectedPID }) {
+                self.selectedPID = nil
+            }
+        }
     }
     
     private func handleTerminate(process: AppProcessInfo, force: Bool) {
@@ -66,7 +76,7 @@ struct ContentView: View {
         
         // 成功したら選択を解除
         if case .success = result {
-            selectedProcess = nil
+            selectedPID = nil
         }
     }
 }
