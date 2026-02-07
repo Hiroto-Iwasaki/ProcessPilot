@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var monitor = ProcessMonitor()
     @State private var selectedPID: Int32?
+    @State private var didLoadInitialProcesses = false
     
     private var selectedProcess: AppProcessInfo? {
         guard let selectedPID else { return nil }
@@ -36,6 +37,11 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 600)
+        .task {
+            guard !didLoadInitialProcesses else { return }
+            didLoadInitialProcesses = true
+            await monitor.refreshProcesses()
+        }
         .onChange(of: monitor.processes) { _ in
             guard let selectedPID else { return }
             if !monitor.processes.contains(where: { $0.pid == selectedPID }) {
