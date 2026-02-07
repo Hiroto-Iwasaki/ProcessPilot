@@ -10,35 +10,10 @@ class ProcessMonitor: ObservableObject {
     @Published var showGrouped = true
     @Published var filterText = ""
     
-    private var timer: Timer?
-    
     enum SortOption: String, CaseIterable, Sendable {
         case cpu = "CPU"
         case memory = "メモリ"
         case name = "名前"
-    }
-    
-    init() {
-        startMonitoring()
-    }
-    
-    func startMonitoring() {
-        // 初回読み込み
-        Task {
-            await refreshProcesses()
-        }
-        
-        // 2秒ごとに更新
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                await self?.refreshProcesses()
-            }
-        }
-    }
-    
-    func stopMonitoring() {
-        timer?.invalidate()
-        timer = nil
     }
     
     func refreshProcesses() async {
