@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Darwin
 
 @MainActor
 class ProcessMonitor: ObservableObject {
@@ -8,7 +9,7 @@ class ProcessMonitor: ObservableObject {
     @Published var isLoading = false
     @Published var sortBy: SortOption = .cpu
     @Published var showGrouped = true
-    @Published var showHighUsageFirst = false
+    @Published var showHighUsageFirst = true
     @Published var filterText = "" {
         didSet {
             applySortingAndGrouping()
@@ -67,6 +68,10 @@ class ProcessMonitor: ObservableObject {
 }
 
 enum ProcessSnapshotBuilder {
+    private static let psLineRegex = try? NSRegularExpression(
+        pattern: #"^\s*(\S+)\s+(\d+)\s+([0-9.]+)\s+([0-9.]+)\s+(.*)$"#
+    )
+    
     static func fetchProcesses() throws -> [AppProcessInfo] {
         let output = try runPS()
         return parseProcesses(output)
@@ -179,7 +184,7 @@ enum ProcessSnapshotBuilder {
         task.standardOutput = pipe
         task.standardError = pipe
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
-        task.arguments = ["aux"]
+        task.arguments = ["-axo", "user=,pid=,%cpu=,%mem=,command="]
         
         try task.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -208,20 +213,18 @@ enum ProcessSnapshotBuilder {
         var newProcesses: [AppProcessInfo] = []
         let lines = output.components(separatedBy: "\n")
         
-        for line in lines.dropFirst() {
-            guard !line.isEmpty else { continue }
+        for line in lines {
+            guard let parsed = parsePSLine(line) else { continue }
             
-            let components = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard components.count >= 11 else { continue }
-            
-            let user = String(components[0])
-            guard let pid = Int32(components[1]) else { continue }
-            guard let cpu = Double(components[2]) else { continue }
-            guard let mem = Double(components[3]) else { continue }
-            
-            let commandPath = components[10...].joined(separator: " ")
-            let processName = extractProcessName(from: commandPath)
+            let user = parsed.user
+            let pid = parsed.pid
+            let cpu = parsed.cpu
+            let mem = parsed.mem
+            let commandPath = parsed.command
+            let executablePath = resolveExecutablePath(pid: pid, commandPath: commandPath)
+            let processName = executablePath.map(extractProcessName(fromExecutablePath:)) ?? extractProcessName(fromCommandPath: commandPath)
             let memoryMB = mem * getPhysicalMemoryGB() * 10.24
+            let isSystemProcess = ProcessDescriptions.isSystemProcess(processName) || isSystemPath(executablePath)
             
             let process = AppProcessInfo(
                 pid: pid,
@@ -229,9 +232,13 @@ enum ProcessSnapshotBuilder {
                 user: user,
                 cpuUsage: cpu,
                 memoryUsage: memoryMB,
-                description: ProcessDescriptions.getDescription(for: processName),
-                isSystemProcess: ProcessDescriptions.isSystemProcess(processName),
-                parentApp: extractParentApp(from: commandPath)
+                description: ProcessDescriptions.getDescription(
+                    for: processName,
+                    executablePath: executablePath
+                ),
+                isSystemProcess: isSystemProcess,
+                parentApp: extractParentApp(from: executablePath ?? commandPath),
+                executablePath: executablePath
             )
             
             newProcesses.append(process)
@@ -240,7 +247,40 @@ enum ProcessSnapshotBuilder {
         return newProcesses
     }
     
-    private static func extractProcessName(from commandPath: String) -> String {
+    private static func parsePSLine(_ line: String) -> (user: String, pid: Int32, cpu: Double, mem: Double, command: String)? {
+        guard let regex = psLineRegex else { return nil }
+        let range = NSRange(location: 0, length: line.utf16.count)
+        guard let match = regex.firstMatch(in: line, range: range), match.numberOfRanges == 6 else {
+            return nil
+        }
+        
+        func capture(_ index: Int) -> String {
+            guard let captureRange = Range(match.range(at: index), in: line) else { return "" }
+            return String(line[captureRange])
+        }
+        
+        let user = capture(1)
+        guard let pid = Int32(capture(2)) else { return nil }
+        guard let cpu = Double(capture(3)) else { return nil }
+        guard let mem = Double(capture(4)) else { return nil }
+        let command = capture(5)
+        
+        guard !user.isEmpty, !command.isEmpty else { return nil }
+        return (user: user, pid: pid, cpu: cpu, mem: mem, command: command)
+    }
+    
+    private static func extractProcessName(fromExecutablePath executablePath: String) -> String {
+        let normalizedPath = executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = URL(fileURLWithPath: normalizedPath).lastPathComponent
+        
+        if name.hasSuffix(".app") {
+            return String(name.dropLast(4))
+        }
+        
+        return name
+    }
+    
+    private static func extractProcessName(fromCommandPath commandPath: String) -> String {
         let path = commandPath.components(separatedBy: " ").first ?? commandPath
         let name = path.components(separatedBy: "/").last ?? path
         
@@ -248,7 +288,7 @@ enum ProcessSnapshotBuilder {
             return String(name.dropLast(4))
         }
         
-        return String(name.prefix(20))
+        return name
     }
     
     private static func extractParentApp(from commandPath: String) -> String? {
@@ -260,6 +300,82 @@ enum ProcessSnapshotBuilder {
             }
         }
         return nil
+    }
+    
+    private static func extractExecutablePath(from commandPath: String) -> String? {
+        let trimmed = commandPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        
+        if !trimmed.contains(" ") {
+            return trimmed
+        }
+        
+        if let argumentStart = trimmed.range(of: " --") {
+            let candidate = String(trimmed[..<argumentStart.lowerBound])
+            if candidate.hasPrefix("/") {
+                return candidate
+            }
+        }
+        
+        let tokens = trimmed.split(separator: " ", omittingEmptySubsequences: true)
+        guard !tokens.isEmpty else {
+            return nil
+        }
+        
+        var assembled: [Substring] = []
+        var bestCandidate: String?
+        
+        for token in tokens {
+            assembled.append(token)
+            let candidate = assembled.joined(separator: " ")
+            guard candidate.hasPrefix("/") else { continue }
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                bestCandidate = candidate
+            }
+        }
+        
+        if let bestCandidate {
+            return bestCandidate
+        }
+        
+        let executable = String(tokens[0])
+        return executable.isEmpty ? nil : executable
+    }
+    
+    private static func resolveExecutablePath(pid: Int32, commandPath: String) -> String? {
+        let fallbackPath = extractExecutablePath(from: commandPath)
+        
+        if let pidPath = executablePathFromPID(pid: pid) {
+            guard let fallbackPath else { return pidPath }
+            
+            let pidBasename = URL(fileURLWithPath: pidPath).lastPathComponent
+            let fallbackBasename = URL(fileURLWithPath: fallbackPath).lastPathComponent
+            
+            if pidPath == fallbackPath || pidBasename == fallbackBasename {
+                return pidPath
+            }
+            
+            return fallbackPath
+        }
+        
+        return fallbackPath
+    }
+    
+    private static func executablePathFromPID(pid: Int32) -> String? {
+        let bufferSize = Int(MAXPATHLEN) * 4
+        var buffer = [CChar](repeating: 0, count: bufferSize)
+        let result = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard result > 0 else { return nil }
+        return String(cString: buffer)
+    }
+    
+    private static func isSystemPath(_ executablePath: String?) -> Bool {
+        guard let executablePath else { return false }
+        
+        return executablePath.hasPrefix("/System/") ||
+            executablePath.hasPrefix("/usr/libexec/") ||
+            executablePath.hasPrefix("/usr/sbin/") ||
+            executablePath.hasPrefix("/sbin/")
     }
     
     private static func getPhysicalMemoryGB() -> Double {

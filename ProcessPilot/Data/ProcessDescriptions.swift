@@ -1,6 +1,11 @@
 import Foundation
 
 struct ProcessDescriptions {
+    private static let unresolvedDescription = "不明なプロセス"
+    private static let bundleSuffixes = [".app", ".xpc", ".appex"]
+    private static var bundleDescriptionCache: [String: String] = [:]
+    private static var bundleDescriptionMissCache: Set<String> = []
+    private static let cacheLock = NSLock()
     
     // 一般的なmacOSプロセスの説明辞書
     static let descriptions: [String: String] = [
@@ -190,7 +195,7 @@ struct ProcessDescriptions {
         "WindowServer",
     ]
     
-    static func getDescription(for processName: String) -> String {
+    static func getDescription(for processName: String, executablePath: String? = nil) -> String {
         // 完全一致で検索
         if let desc = descriptions[processName] {
             return desc
@@ -203,7 +208,11 @@ struct ProcessDescriptions {
             }
         }
         
-        return "不明なプロセス"
+        if let bundleDescription = getBundleDescription(from: executablePath) {
+            return bundleDescription
+        }
+        
+        return unresolvedDescription
     }
     
     static func isSystemProcess(_ processName: String) -> Bool {
@@ -214,5 +223,69 @@ struct ProcessDescriptions {
     static func isCriticalProcess(_ processName: String) -> Bool {
         criticalProcesses.contains(processName) ||
         criticalProcesses.contains { processName.hasPrefix($0) }
+    }
+    
+    private static func getBundleDescription(from executablePath: String?) -> String? {
+        guard let executablePath else { return nil }
+        
+        cacheLock.lock()
+        if let cached = bundleDescriptionCache[executablePath] {
+            cacheLock.unlock()
+            return cached
+        }
+        if bundleDescriptionMissCache.contains(executablePath) {
+            cacheLock.unlock()
+            return nil
+        }
+        cacheLock.unlock()
+        
+        guard let bundleURL = resolveBundleURL(from: executablePath),
+              let bundleDescription = loadBundleDescription(from: bundleURL) else {
+            cacheLock.lock()
+            bundleDescriptionMissCache.insert(executablePath)
+            cacheLock.unlock()
+            return nil
+        }
+        
+        cacheLock.lock()
+        bundleDescriptionCache[executablePath] = bundleDescription
+        cacheLock.unlock()
+        return bundleDescription
+    }
+    
+    private static func resolveBundleURL(from executablePath: String) -> URL? {
+        var currentURL = URL(fileURLWithPath: executablePath)
+        
+        while currentURL.path != "/" {
+            let lowerPath = currentURL.path.lowercased()
+            if bundleSuffixes.contains(where: { lowerPath.hasSuffix($0) }) {
+                return currentURL
+            }
+            currentURL.deleteLastPathComponent()
+        }
+        
+        return nil
+    }
+    
+    private static func loadBundleDescription(from bundleURL: URL) -> String? {
+        let infoPlistURL = bundleURL.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: infoPlistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            return nil
+        }
+        
+        let bundleName = plist["CFBundleDisplayName"] as? String ?? plist["CFBundleName"] as? String
+        let bundleIdentifier = plist["CFBundleIdentifier"] as? String
+        
+        switch (bundleName, bundleIdentifier) {
+        case let (name?, identifier?) where !name.isEmpty && !identifier.isEmpty:
+            return "\(name) (\(identifier))"
+        case let (name?, _) where !name.isEmpty:
+            return name
+        case let (_, identifier?) where !identifier.isEmpty:
+            return identifier
+        default:
+            return nil
+        }
     }
 }

@@ -47,12 +47,12 @@ struct ProcessDetailView: View {
             // アイコン
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(process.isSystemProcess ? Color.orange.opacity(0.2) : Color.blue.opacity(0.2))
+                    .fill(sourceTintColor.opacity(0.2))
                     .frame(width: 56, height: 56)
                 
-                Image(systemName: process.isSystemProcess ? "gearshape.fill" : "app.fill")
+                Image(systemName: sourceIcon)
                     .font(.title)
-                    .foregroundColor(process.isSystemProcess ? .orange : .blue)
+                    .foregroundColor(sourceTintColor)
             }
             
             VStack(alignment: .leading, spacing: 4) {
@@ -61,13 +61,13 @@ struct ProcessDetailView: View {
                         .font(.title2)
                         .fontWeight(.bold)
                     
-                    if process.isSystemProcess {
-                        Text("システム")
+                    if shouldShowSourceBadge {
+                        Text(process.source.rawValue)
                             .font(.caption)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.2))
-                            .foregroundColor(.orange)
+                            .background(sourceTintColor.opacity(0.2))
+                            .foregroundColor(sourceTintColor)
                             .cornerRadius(4)
                     }
                 }
@@ -161,6 +161,7 @@ struct ProcessDetailView: View {
                 .font(.headline)
             
             DetailRow(label: "PID", value: "\(process.pid)")
+            DetailRow(label: "出処", value: process.source.rawValue)
             DetailRow(label: "ユーザー", value: process.user)
             
             if let parentApp = process.parentApp {
@@ -171,6 +172,20 @@ struct ProcessDetailView: View {
                 label: "種類",
                 value: process.isSystemProcess ? "システムプロセス" : "アプリケーション"
             )
+            
+            if let executablePath = process.executablePath {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("実行ファイル")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    Text(executablePath)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                }
+            } else {
+                DetailRow(label: "実行ファイル", value: "取得不可")
+            }
         }
     }
     
@@ -228,6 +243,40 @@ struct ProcessDetailView: View {
                 }
             }
         }
+    }
+    
+    private var sourceIcon: String {
+        switch process.source {
+        case .currentApp:
+            return "sparkles"
+        case .system:
+            return "gearshape.fill"
+        case .application:
+            return "app.fill"
+        case .commandLine:
+            return "terminal.fill"
+        case .unknown:
+            return "questionmark.app"
+        }
+    }
+    
+    private var sourceTintColor: Color {
+        switch process.source {
+        case .currentApp:
+            return .blue
+        case .system:
+            return .orange
+        case .application:
+            return .blue
+        case .commandLine:
+            return .teal
+        case .unknown:
+            return .gray
+        }
+    }
+    
+    private var shouldShowSourceBadge: Bool {
+        process.source == .currentApp || process.source == .system
     }
     
 }

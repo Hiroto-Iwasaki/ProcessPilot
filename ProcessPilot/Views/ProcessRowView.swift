@@ -10,12 +10,12 @@ struct ProcessRowView: View {
             // プロセスアイコン
             ZStack {
                 Circle()
-                    .fill(process.isSystemProcess ? Color.orange.opacity(0.2) : Color.blue.opacity(0.2))
+                    .fill(sourceTintColor.opacity(0.2))
                     .frame(width: 28, height: 28)
                 
                 Image(systemName: processIcon)
                     .font(.caption)
-                    .foregroundColor(process.isSystemProcess ? .orange : .blue)
+                    .foregroundColor(sourceTintColor)
             }
             
             // プロセス情報
@@ -25,13 +25,13 @@ struct ProcessRowView: View {
                         .fontWeight(.medium)
                         .lineLimit(1)
                     
-                    if process.isSystemProcess {
-                        Text("システム")
+                    if shouldShowSourceBadge {
+                        Text(process.source.rawValue)
                             .font(.caption2)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
-                            .background(Color.orange.opacity(0.2))
-                            .foregroundColor(.orange)
+                            .background(sourceBadgeColor.opacity(0.2))
+                            .foregroundColor(sourceBadgeColor)
                             .cornerRadius(3)
                     }
                 }
@@ -86,10 +86,52 @@ struct ProcessRowView: View {
     }
     
     private var processIcon: String {
-        if process.isSystemProcess {
+        switch process.source {
+        case .system:
             return "gearshape.fill"
+        case .currentApp:
+            return "sparkles"
+        case .application:
+            return "app.fill"
+        case .commandLine:
+            return "terminal.fill"
+        case .unknown:
+            return "questionmark.app"
         }
-        return "app.fill"
+    }
+    
+    private var shouldShowSourceBadge: Bool {
+        process.source == .system || process.source == .currentApp
+    }
+    
+    private var sourceBadgeColor: Color {
+        switch process.source {
+        case .system:
+            return .orange
+        case .currentApp:
+            return .blue
+        case .application:
+            return .blue
+        case .commandLine:
+            return .teal
+        case .unknown:
+            return .gray
+        }
+    }
+    
+    private var sourceTintColor: Color {
+        switch process.source {
+        case .system:
+            return .orange
+        case .currentApp:
+            return .blue
+        case .application:
+            return .blue
+        case .commandLine:
+            return .teal
+        case .unknown:
+            return .gray
+        }
     }
 }
 
