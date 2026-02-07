@@ -3,7 +3,7 @@ import Foundation
 struct AppProcessInfo: Identifiable, Hashable, Sendable {
     enum Source: String, Sendable {
         case currentApp = "このアプリ"
-        case system = "このシステム"
+        case system = "システム"
         case application = "他アプリ"
         case commandLine = "コマンド"
         case unknown = "不明"

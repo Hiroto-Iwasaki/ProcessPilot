@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ProcessListView: View {
     @ObservedObject var monitor: ProcessMonitor
-    @Binding var selectedPID: Int32?
+    @Binding var selection: ProcessSelection?
     
     var body: some View {
         ScrollView {
@@ -12,7 +12,7 @@ struct ProcessListView: View {
                     ForEach(monitor.groups) { group in
                         ProcessGroupView(
                             group: group,
-                            selectedPID: $selectedPID
+                            selection: $selection
                         )
                     }
                 } else {
@@ -20,10 +20,10 @@ struct ProcessListView: View {
                     ForEach(monitor.processes) { process in
                         ProcessRowView(
                             process: process,
-                            isSelected: selectedPID == process.pid
+                            isSelected: selection == .process(process.pid)
                         )
                         .onTapGesture {
-                            selectedPID = process.pid
+                            selection = .process(process.pid)
                         }
                         
                         Divider()
@@ -41,7 +41,7 @@ struct ProcessListView: View {
 
 struct ProcessGroupView: View {
     let group: ProcessGroup
-    @Binding var selectedPID: Int32?
+    @Binding var selection: ProcessSelection?
     @State private var isExpanded = false
     
     var body: some View {
@@ -49,6 +49,7 @@ struct ProcessGroupView: View {
             // グループヘッダー
             Button(action: {
                 withAnimation(.easeInOut(duration: 0.2)) {
+                    selection = .group(group.id)
                     isExpanded.toggle()
                 }
             }) {
@@ -100,7 +101,11 @@ struct ProcessGroupView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(
+                selection == .group(group.id)
+                    ? Color.accentColor.opacity(0.12)
+                    : Color(NSColor.controlBackgroundColor)
+            )
             
             // 展開時のプロセス一覧
             if isExpanded {
@@ -113,12 +118,12 @@ struct ProcessGroupView: View {
                             
                             ProcessRowView(
                                 process: process,
-                                isSelected: selectedPID == process.pid,
+                                isSelected: selection == .process(process.pid),
                                 isNested: true
                             )
                         }
                         .onTapGesture {
-                            selectedPID = process.pid
+                            selection = .process(process.pid)
                         }
                         
                         Divider()
@@ -147,7 +152,10 @@ struct ResourceBadge: View {
             Text(value)
                 .font(.caption)
                 .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
+        .layoutPriority(1)
         .foregroundColor(color)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -159,6 +167,6 @@ struct ResourceBadge: View {
 #Preview {
     ProcessListView(
         monitor: ProcessMonitor(),
-        selectedPID: .constant(nil)
+        selection: .constant(nil)
     )
 }

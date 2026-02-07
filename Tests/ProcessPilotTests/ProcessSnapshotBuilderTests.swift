@@ -114,4 +114,144 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         XCTAssertTrue(groups.contains { $0.appName == "Safari" })
         XCTAssertTrue(groups.contains { $0.appName == "システム" })
     }
+    
+    func testSortProcessesUsesPIDAsStableTieBreaker() {
+        let input = [
+            AppProcessInfo(
+                pid: 200,
+                name: "SameName",
+                user: "user",
+                cpuUsage: 10.0,
+                memoryUsage: 100,
+                description: "desc",
+                isSystemProcess: false,
+                parentApp: nil
+            ),
+            AppProcessInfo(
+                pid: 100,
+                name: "SameName",
+                user: "user",
+                cpuUsage: 10.0,
+                memoryUsage: 100,
+                description: "desc",
+                isSystemProcess: false,
+                parentApp: nil
+            )
+        ]
+        
+        let sorted = ProcessSnapshotBuilder.sortProcesses(
+            input,
+            sortBy: .cpu,
+            filterText: "",
+            showHighUsageFirst: true
+        )
+        
+        XCTAssertEqual(sorted.map(\.pid), [100, 200])
+    }
+    
+    func testSortProcessesPlacesNonFiniteUsageAtEndForDescending() {
+        let input = [
+            AppProcessInfo(
+                pid: 1,
+                name: "NaNProcess",
+                user: "user",
+                cpuUsage: .nan,
+                memoryUsage: 100,
+                description: "desc",
+                isSystemProcess: false,
+                parentApp: nil
+            ),
+            AppProcessInfo(
+                pid: 2,
+                name: "HighCPU",
+                user: "user",
+                cpuUsage: 20.0,
+                memoryUsage: 100,
+                description: "desc",
+                isSystemProcess: false,
+                parentApp: nil
+            ),
+            AppProcessInfo(
+                pid: 3,
+                name: "LowCPU",
+                user: "user",
+                cpuUsage: 5.0,
+                memoryUsage: 100,
+                description: "desc",
+                isSystemProcess: false,
+                parentApp: nil
+            )
+        ]
+        
+        let sorted = ProcessSnapshotBuilder.sortProcesses(
+            input,
+            sortBy: .cpu,
+            filterText: "",
+            showHighUsageFirst: true
+        )
+        
+        XCTAssertEqual(sorted.map(\.pid), [2, 3, 1])
+    }
+    
+    func testUsageSmootherUsesMovingAverageWindowOfThree() {
+        var smoother = UsageSmoother(windowSize: 3)
+        
+        let first = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 10, memory: 100)])[0]
+        XCTAssertEqual(first.cpuUsage, 10, accuracy: 0.001)
+        XCTAssertEqual(first.memoryUsage, 100, accuracy: 0.001)
+        
+        let second = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 40, memory: 400)])[0]
+        XCTAssertEqual(second.cpuUsage, 25, accuracy: 0.001)
+        XCTAssertEqual(second.memoryUsage, 250, accuracy: 0.001)
+        
+        let third = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 70, memory: 700)])[0]
+        XCTAssertEqual(third.cpuUsage, 40, accuracy: 0.001)
+        XCTAssertEqual(third.memoryUsage, 400, accuracy: 0.001)
+        
+        let fourth = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 100, memory: 1000)])[0]
+        XCTAssertEqual(fourth.cpuUsage, 70, accuracy: 0.001)
+        XCTAssertEqual(fourth.memoryUsage, 700, accuracy: 0.001)
+    }
+    
+    func testUsageSmootherDropsHistoryForMissingProcesses() {
+        var smoother = UsageSmoother(windowSize: 3)
+        
+        _ = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 10, memory: 100)])
+        _ = smoother.smooth(processes: [makeProcess(pid: 2, name: "B", cpu: 20, memory: 200)])
+        
+        let reappeared = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 100, memory: 1000)])[0]
+        XCTAssertEqual(reappeared.cpuUsage, 100, accuracy: 0.001)
+        XCTAssertEqual(reappeared.memoryUsage, 1000, accuracy: 0.001)
+    }
+    
+    func testUsageSmootherCanDropHistoryForSpecificPID() {
+        var smoother = UsageSmoother(windowSize: 3)
+        
+        _ = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 10, memory: 100)])
+        _ = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 40, memory: 400)])
+        
+        smoother.removeHistory(forPIDs: [1])
+        
+        let reset = smoother.smooth(processes: [makeProcess(pid: 1, name: "A", cpu: 100, memory: 1000)])[0]
+        XCTAssertEqual(reset.cpuUsage, 100, accuracy: 0.001)
+        XCTAssertEqual(reset.memoryUsage, 1000, accuracy: 0.001)
+    }
+    
+    private func makeProcess(
+        pid: Int32,
+        name: String,
+        cpu: Double,
+        memory: Double
+    ) -> AppProcessInfo {
+        AppProcessInfo(
+            pid: pid,
+            name: name,
+            user: "user",
+            cpuUsage: cpu,
+            memoryUsage: memory,
+            description: "desc",
+            isSystemProcess: false,
+            parentApp: nil
+        )
+    }
 }

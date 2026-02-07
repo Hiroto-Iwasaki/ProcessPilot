@@ -48,6 +48,30 @@ struct ProcessManager {
         completion(response == .alertSecondButtonReturn)
     }
     
+    /// システムプロセスを含むグループ終了警告を表示
+    static func showSystemGroupWarning(
+        groupName: String,
+        systemProcessCount: Int,
+        completion: @escaping (Bool) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = "システムプロセスを含むグループの終了"
+        alert.informativeText = """
+        「\(groupName)」にはシステムプロセスが \(systemProcessCount) 件含まれています。
+        
+        グループ終了を実行すると、システムが不安定になったり、
+        予期しない動作が発生する可能性があります。
+        
+        本当に続行しますか？
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "キャンセル")
+        alert.addButton(withTitle: "続行")
+        
+        let response = alert.runModal()
+        completion(response == .alertSecondButtonReturn)
+    }
+    
     /// 終了不可プロセス警告を表示
     static func showCriticalProcessAlert(processName: String) {
         let alert = NSAlert()

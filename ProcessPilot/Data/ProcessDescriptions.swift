@@ -3,6 +3,7 @@ import Foundation
 struct ProcessDescriptions {
     private static let unresolvedDescription = "不明なプロセス"
     private static let bundleSuffixes = [".app", ".xpc", ".appex"]
+    private static let bundlePathMarkers = [".app/", ".xpc/", ".appex/"]
     private static var bundleDescriptionCache: [String: String] = [:]
     private static var bundleDescriptionMissCache: Set<String> = []
     private static let cacheLock = NSLock()
@@ -208,7 +209,8 @@ struct ProcessDescriptions {
             }
         }
         
-        if let bundleDescription = getBundleDescription(from: executablePath) {
+        if shouldAttemptBundleDescriptionLookup(executablePath: executablePath),
+           let bundleDescription = getBundleDescription(from: executablePath) {
             return bundleDescription
         }
         
@@ -223,6 +225,18 @@ struct ProcessDescriptions {
     static func isCriticalProcess(_ processName: String) -> Bool {
         criticalProcesses.contains(processName) ||
         criticalProcesses.contains { processName.hasPrefix($0) }
+    }
+    
+    private static func shouldAttemptBundleDescriptionLookup(executablePath: String?) -> Bool {
+        guard let executablePath else { return false }
+        
+        let lowerPath = executablePath.lowercased()
+        
+        if bundleSuffixes.contains(where: { lowerPath.hasSuffix($0) }) {
+            return true
+        }
+        
+        return bundlePathMarkers.contains(where: { lowerPath.contains($0) })
     }
     
     private static func getBundleDescription(from executablePath: String?) -> String? {

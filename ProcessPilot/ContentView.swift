@@ -1,13 +1,19 @@
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
     @StateObject private var monitor = ProcessMonitor()
-    @State private var selectedPID: Int32?
+    @State private var selection: ProcessSelection?
     @State private var didLoadInitialProcesses = false
     
     private var selectedProcess: AppProcessInfo? {
-        guard let selectedPID else { return nil }
-        return monitor.processes.first { $0.pid == selectedPID }
+        guard case .process(let selectedPID) = selection else { return nil }
+        return monitor.processes.first(where: { $0.pid == selectedPID })
+    }
+    
+    private var selectedGroup: ProcessGroup? {
+        guard case .group(let selectedGroupID) = selection else { return nil }
+        return monitor.groups.first(where: { $0.id == selectedGroupID })
     }
     
     var body: some View {
@@ -19,19 +25,25 @@ struct ContentView: View {
             // メインコンテンツ
             ProcessListView(
                 monitor: monitor,
-                selectedPID: $selectedPID
+                selection: $selection
             )
             .frame(minWidth: 400)
         } detail: {
             // 詳細パネル
-            if let process = selectedProcess {
+            if let group = selectedGroup {
+                ProcessGroupDetailView(
+                    group: group,
+                    onTerminateGroup: { handleTerminate(group: group, force: false) },
+                    onForceTerminateGroup: { handleTerminate(group: group, force: true) }
+                )
+            } else if let process = selectedProcess {
                 ProcessDetailView(
                     process: process,
                     onTerminate: { handleTerminate(process: process, force: false) },
                     onForceTerminate: { handleTerminate(process: process, force: true) }
                 )
             } else {
-                Text("プロセスを選択してください")
+                Text("グループまたはプロセスを選択してください")
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -43,10 +55,10 @@ struct ContentView: View {
             await monitor.refreshProcesses()
         }
         .onChange(of: monitor.processes) { _ in
-            guard let selectedPID else { return }
-            if !monitor.processes.contains(where: { $0.pid == selectedPID }) {
-                self.selectedPID = nil
-            }
+            validateSelection()
+        }
+        .onChange(of: monitor.groups) { _ in
+            validateSelection()
         }
     }
     
@@ -80,10 +92,150 @@ struct ContentView: View {
         
         ProcessManager.showResultAlert(result: result, processName: process.name)
         
-        // 成功したら選択を解除
-        if case .success = result {
-            selectedPID = nil
+        switch result {
+        case .success, .processNotFound:
+            monitor.removeProcessesFromCache(pids: [process.pid])
+            selection = nil
+        case .permissionDenied, .failed:
+            break
         }
+    }
+    
+    private func handleTerminate(group: ProcessGroup, force: Bool) {
+        let nonCriticalSystemCount = group.processes.filter {
+            $0.isSystemProcess && !ProcessDescriptions.isCriticalProcess($0.name)
+        }.count
+        
+        if nonCriticalSystemCount > 0 {
+            ProcessManager.showSystemGroupWarning(
+                groupName: group.appName,
+                systemProcessCount: nonCriticalSystemCount
+            ) { confirmed in
+                if confirmed {
+                    executeGroupTermination(group: group, force: force)
+                }
+            }
+            return
+        }
+        
+        executeGroupTermination(group: group, force: force)
+    }
+    
+    private func executeGroupTermination(group: ProcessGroup, force: Bool) {
+        let summary = performGroupTermination(group: group, force: force)
+        monitor.removeProcessesFromCache(pids: summary.endedProcessPIDs)
+        showGroupTerminationSummary(summary, groupName: group.appName, force: force)
+        
+        if !summary.endedProcessPIDs.isEmpty {
+            selection = nil
+        }
+    }
+    
+    private func performGroupTermination(group: ProcessGroup, force: Bool) -> GroupTerminationSummary {
+        var successCount = 0
+        var permissionDeniedCount = 0
+        var processNotFoundCount = 0
+        var failedCount = 0
+        var skippedCriticalCount = 0
+        var endedProcessPIDs: Set<Int32> = []
+        
+        for process in group.processes {
+            if ProcessDescriptions.isCriticalProcess(process.name) {
+                skippedCriticalCount += 1
+                continue
+            }
+            
+            let result = force
+                ? ProcessManager.forceTerminateProcess(pid: process.pid)
+                : ProcessManager.terminateProcess(pid: process.pid)
+            
+            switch result {
+            case .success:
+                successCount += 1
+                endedProcessPIDs.insert(process.pid)
+            case .permissionDenied:
+                permissionDeniedCount += 1
+            case .processNotFound:
+                processNotFoundCount += 1
+                endedProcessPIDs.insert(process.pid)
+            case .failed:
+                failedCount += 1
+            }
+        }
+        
+        return GroupTerminationSummary(
+            totalCount: group.processCount,
+            successCount: successCount,
+            permissionDeniedCount: permissionDeniedCount,
+            processNotFoundCount: processNotFoundCount,
+            failedCount: failedCount,
+            skippedCriticalCount: skippedCriticalCount,
+            endedProcessPIDs: endedProcessPIDs
+        )
+    }
+    
+    private func showGroupTerminationSummary(
+        _ summary: GroupTerminationSummary,
+        groupName: String,
+        force: Bool
+    ) {
+        let alert = NSAlert()
+        alert.addButton(withTitle: "OK")
+        
+        if summary.successCount > 0 {
+            alert.messageText = force ? "グループを強制終了しました" : "グループを終了しました"
+            alert.alertStyle = .informational
+        } else {
+            alert.messageText = "グループ終了の結果"
+            alert.alertStyle = .warning
+        }
+        
+        var lines = [
+            "対象グループ: \(groupName)",
+            "対象プロセス: \(summary.totalCount) 件",
+            "成功: \(summary.successCount) 件"
+        ]
+        
+        if summary.permissionDeniedCount > 0 {
+            lines.append("権限不足: \(summary.permissionDeniedCount) 件")
+        }
+        if summary.processNotFoundCount > 0 {
+            lines.append("既に終了: \(summary.processNotFoundCount) 件")
+        }
+        if summary.failedCount > 0 {
+            lines.append("失敗: \(summary.failedCount) 件")
+        }
+        if summary.skippedCriticalCount > 0 {
+            lines.append("重要プロセスのため未実行: \(summary.skippedCriticalCount) 件")
+        }
+        
+        alert.informativeText = lines.joined(separator: "\n")
+        alert.runModal()
+    }
+    
+    private func validateSelection() {
+        guard let selection else { return }
+        
+        switch selection {
+        case .process(let selectedPID):
+            if !monitor.processes.contains(where: { $0.pid == selectedPID }) {
+                self.selection = nil
+            }
+        case .group(let selectedGroupID):
+            if !monitor.groups.contains(where: { $0.id == selectedGroupID }) {
+                self.selection = nil
+            }
+        }
+    }
+    
+    private struct GroupTerminationSummary {
+        let totalCount: Int
+        let successCount: Int
+        let permissionDeniedCount: Int
+        let processNotFoundCount: Int
+        let failedCount: Int
+        let skippedCriticalCount: Int
+        let endedProcessPIDs: Set<Int32>
     }
 }
 
