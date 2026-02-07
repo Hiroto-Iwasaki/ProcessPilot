@@ -1,0 +1,218 @@
+import Foundation
+
+struct ProcessDescriptions {
+    
+    // 一般的なmacOSプロセスの説明辞書
+    static let descriptions: [String: String] = [
+        // カーネル・システム基幹
+        "kernel_task": "macOSカーネル - システムの中核（終了不可）",
+        "launchd": "システム・サービス管理デーモン（終了不可）",
+        "WindowServer": "画面描画・ウィンドウ管理（終了不可）",
+        "loginwindow": "ログイン画面とセッション管理",
+        "SystemUIServer": "メニューバーとシステムUI管理",
+        "Dock": "Dockとアプリケーション切り替え",
+        "Finder": "ファイル管理とデスクトップ",
+        
+        // Spotlight・検索
+        "mds": "Spotlight メタデータサーバー",
+        "mds_stores": "Spotlight インデックス作成",
+        "mdworker": "Spotlight インデックスワーカー",
+        "mdworker_shared": "Spotlight 共有インデックス処理",
+        
+        // オーディオ・ビデオ
+        "coreaudiod": "システムオーディオ管理",
+        "audioclocksyncd": "オーディオ同期サービス",
+        "VDCAssistant": "カメラ（FaceTime）制御",
+        "avconferenced": "ビデオ会議サービス",
+        
+        // ネットワーク
+        "networkd": "ネットワーク接続管理",
+        "mDNSResponder": "Bonjour/ローカルネットワーク検出",
+        "configd": "システム設定デーモン",
+        "airportd": "Wi-Fi 管理",
+        "WiFiAgent": "Wi-Fi 接続アシスタント",
+        "bluetoothd": "Bluetooth 管理",
+        
+        // セキュリティ
+        "securityd": "セキュリティフレームワーク",
+        "trustd": "証明書検証サービス",
+        "keybagd": "暗号化キー管理",
+        "TouchBarServer": "Touch Bar 管理",
+        "biomed": "生体認証管理",
+        "secd": "セキュリティデーモン",
+        
+        // iCloud・同期
+        "cloudd": "iCloud 同期サービス",
+        "cloudpaird": "iCloud ペアリング",
+        "cloudphotod": "iCloud 写真同期",
+        "bird": "iCloud Drive 同期",
+        "nsurlsessiond": "バックグラウンドダウンロード",
+        "assistantd": "Siri アシスタント",
+        
+        // 通知・メッセージ
+        "apsd": "Apple Push Notification Service",
+        "notificationcenter": "通知センター",
+        "usernoted": "ユーザー通知デーモン",
+        "UserNotificationCenter": "通知表示管理",
+        "imagent": "iMessage デーモン",
+        "identityservicesd": "Apple ID 認証サービス",
+        
+        // グラフィック・GPU
+        "MTLCompilerService": "Metal シェーダーコンパイル",
+        "gpuinfod": "GPU 情報サービス",
+        "distnoted": "分散通知サービス",
+        
+        // 電源・パフォーマンス
+        "powerd": "電源管理デーモン",
+        "thermalmonitord": "温度監視サービス",
+        "coreduetd": "バッテリー最適化",
+        "dasd": "デュエットアクティビティスケジューラ",
+        
+        // 入力・アクセシビリティ
+        "hidd": "ヒューマンインターフェースデバイス管理",
+        "universalaccessd": "アクセシビリティサービス",
+        "talagent": "テキスト入力アシスタント",
+        
+        // ストレージ・ディスク
+        "fseventsd": "ファイルシステムイベント監視",
+        "diskarbitrationd": "ディスクマウント管理",
+        "diskmanagementd": "ディスク管理サービス",
+        "fsck_apfs": "APFS ファイルシステムチェック",
+        
+        // アプリケーション関連
+        "lsd": "Launch Services デーモン",
+        "coreservicesd": "コアサービス管理",
+        "pbs": "ペーストボードサービス",
+        "sharedfilelistd": "共有ファイルリスト管理",
+        "iconservicesagent": "アイコンキャッシュサービス",
+        
+        // Time Machine
+        "backupd": "Time Machine バックアップ",
+        "backupd-helper": "Time Machine ヘルパー",
+        
+        // Xcode・開発ツール
+        "Xcode": "統合開発環境",
+        "sourcekit-servi": "Swift 言語サービス",
+        "SourceKitService": "コード補完・分析",
+        "swiftc": "Swift コンパイラ",
+        "clang": "C/C++/Objective-C コンパイラ",
+        "lldb": "デバッガ",
+        "Simulator": "iOS/watchOS シミュレータ",
+        "IBAgent": "Interface Builder エージェント",
+        "xcrun": "Xcode コマンドラインツール",
+        
+        // ブラウザ
+        "Safari": "Safari ウェブブラウザ",
+        "com.apple.WebKi": "Safari レンダリングエンジン",
+        "Safari Web Cont": "Safari ウェブコンテンツ",
+        "Google Chrome": "Chrome ウェブブラウザ",
+        "Google Chrome H": "Chrome ヘルパープロセス",
+        "firefox": "Firefox ウェブブラウザ",
+        
+        // 一般的なアプリ
+        "Mail": "メールクライアント",
+        "Calendar": "カレンダーアプリ",
+        "Notes": "メモアプリ",
+        "Reminders": "リマインダーアプリ",
+        "Music": "ミュージックアプリ",
+        "Photos": "写真アプリ",
+        "Preview": "ファイルプレビュー",
+        "TextEdit": "テキストエディタ",
+        "Terminal": "ターミナル",
+        "Activity Monito": "アクティビティモニタ",
+        "System Preferen": "システム環境設定",
+        "App Store": "App Store",
+        
+        // 開発者ツール
+        "node": "Node.js ランタイム",
+        "python": "Python インタープリタ",
+        "python3": "Python 3 インタープリタ",
+        "ruby": "Ruby インタープリタ",
+        "java": "Java 仮想マシン",
+        "docker": "Docker コンテナエンジン",
+        "code": "Visual Studio Code",
+        "code-helper": "VS Code ヘルパー",
+        
+        // その他
+        "cfprefsd": "設定ファイル管理",
+        "logd": "システムログサービス",
+        "syslogd": "システムログデーモン",
+        "cron": "定期実行スケジューラ",
+        "cupsd": "プリントサービス",
+        "locationd": "位置情報サービス",
+        "mediaremoted": "メディアリモート制御",
+        "softwareupdated": "ソフトウェアアップデート",
+        "syspolicyd": "システムポリシー管理",
+        "commerce": "App Store 購入サービス",
+        "storeaccountd": "App Store アカウント管理",
+        "storeassetd": "App Store アセット管理",
+    ]
+    
+    // システムプロセス（終了すると問題が起きる可能性があるもの）
+    static let systemProcesses: Set<String> = [
+        "kernel_task",
+        "launchd",
+        "WindowServer",
+        "loginwindow",
+        "SystemUIServer",
+        "Dock",
+        "Finder",
+        "mds",
+        "mds_stores",
+        "coreaudiod",
+        "networkd",
+        "securityd",
+        "trustd",
+        "keybagd",
+        "configd",
+        "powerd",
+        "thermalmonitord",
+        "hidd",
+        "fseventsd",
+        "diskarbitrationd",
+        "lsd",
+        "coreservicesd",
+        "cfprefsd",
+        "logd",
+        "syslogd",
+        "apsd",
+        "cloudd",
+        "identityservicesd",
+        "bluetoothd",
+        "airportd",
+        "locationd",
+    ]
+    
+    // 終了不可プロセス
+    static let criticalProcesses: Set<String> = [
+        "kernel_task",
+        "launchd",
+        "WindowServer",
+    ]
+    
+    static func getDescription(for processName: String) -> String {
+        // 完全一致で検索
+        if let desc = descriptions[processName] {
+            return desc
+        }
+        
+        // 部分一致で検索（プロセス名が途中で切れている場合）
+        for (key, value) in descriptions {
+            if processName.hasPrefix(key) || key.hasPrefix(processName) {
+                return value
+            }
+        }
+        
+        return "不明なプロセス"
+    }
+    
+    static func isSystemProcess(_ processName: String) -> Bool {
+        systemProcesses.contains(processName) ||
+        systemProcesses.contains { processName.hasPrefix($0) }
+    }
+    
+    static func isCriticalProcess(_ processName: String) -> Bool {
+        criticalProcesses.contains(processName) ||
+        criticalProcesses.contains { processName.hasPrefix($0) }
+    }
+}

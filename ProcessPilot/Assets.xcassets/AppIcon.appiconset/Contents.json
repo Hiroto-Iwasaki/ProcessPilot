@@ -1,0 +1,18 @@
+{
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
+  "identifier" : "com.example.ProcessPilot",
+  "primaryIcon" : {
+    "assetName" : "AppIcon",
+    "assetSimpleName" : "AppIcon"
+  },
+  "version" : "1.0"
+}
