@@ -16,6 +16,12 @@ class ProcessMonitor: ObservableObject {
         case name = "名前"
     }
     
+    init() {
+        Task {
+            await refreshProcesses()
+        }
+    }
+    
     func refreshProcesses() async {
         guard !isLoading else { return }
         isLoading = true
