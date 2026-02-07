@@ -57,6 +57,8 @@ struct ProcessRowView: View {
                     Text(String(format: "%.1f%%", process.cpuUsage))
                         .font(.caption)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .foregroundColor(ProcessDisplayMetrics.cpuColor(for: process.cpuUsage))
                     
                     ProgressView(value: min(process.cpuUsage / 100, 1.0))
@@ -70,6 +72,8 @@ struct ProcessRowView: View {
                     Text(ProcessDisplayMetrics.memoryText(for: process.memoryUsage))
                         .font(.caption)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .foregroundColor(ProcessDisplayMetrics.memoryColor(for: process.memoryUsage))
                     
                     ProgressView(value: min(process.memoryUsage / 8192, 1.0)) // 8GB を 100% とする
