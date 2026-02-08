@@ -23,8 +23,12 @@ class ProcessMonitor: ObservableObject {
     
     private var allProcesses: [AppProcessInfo] = []
     private var usageSmoother = UsageSmoother(windowSize: 3)
+    private var systemGroupCPUSmoother = SystemGroupCPUSmoother(windowSize: 3)
+    private var cpuUsageState = CPUUsageDeltaState()
     private var snapshotTask: Task<Void, Never>?
     private var snapshotVersion: UInt64 = 0
+    private var hasPrimedInitialSamples = false
+    private let initialWarmupIntervalNanoseconds: UInt64 = 250_000_000
     
     enum SortOption: String, CaseIterable, Sendable {
         case cpu = "CPU"
@@ -34,19 +38,21 @@ class ProcessMonitor: ObservableObject {
     func refreshProcesses() async {
         guard !isLoading else { return }
         isLoading = true
+        defer { isLoading = false }
         
         do {
-            let fetchedProcesses = try await Task.detached(priority: .utility) {
-                try ProcessSnapshotBuilder.fetchProcesses()
-            }.value
+            if !hasPrimedInitialSamples {
+                try await primeInitialSamples()
+                hasPrimedInitialSamples = true
+            }
             
-            allProcesses = usageSmoother.smooth(processes: fetchedProcesses)
+            allProcesses = try await fetchAndProcessProcesses()
             applySortingAndGrouping()
+        } catch is CancellationError {
+            return
         } catch {
             print("Error refreshing process list: \(error)")
         }
-        
-        isLoading = false
     }
     
     func changeSortOption(_ option: SortOption) {
@@ -69,6 +75,7 @@ class ProcessMonitor: ObservableObject {
         let previousCount = allProcesses.count
         allProcesses.removeAll { pids.contains($0.pid) }
         usageSmoother.removeHistory(forPIDs: pids)
+        cpuUsageState.removeHistory(forPIDs: pids)
         
         guard allProcesses.count != previousCount else { return }
         applySortingAndGrouping()
@@ -106,10 +113,219 @@ class ProcessMonitor: ObservableObject {
                     return
                 }
                 
+                let smoothedGroups = self.systemGroupCPUSmoother.smooth(
+                    groups: snapshot.groups
+                )
                 self.processes = snapshot.processes
-                self.groups = snapshot.groups
+                self.groups = smoothedGroups
             }
         }
+    }
+    
+    private func fetchProcesses() async throws -> [AppProcessInfo] {
+        try await Task.detached(priority: .utility) {
+            try ProcessSnapshotBuilder.fetchProcesses()
+        }.value
+    }
+    
+    private func fetchAndProcessProcesses() async throws -> [AppProcessInfo] {
+        let fetchedProcesses = try await fetchProcesses()
+        let previousState = cpuUsageState
+        
+        let cpuAdjusted = await Task.detached(priority: .utility) {
+            CPUUsageDeltaCalculator.calculate(
+                processes: fetchedProcesses,
+                previousState: previousState,
+                timestampNanoseconds: DispatchTime.now().uptimeNanoseconds
+            )
+        }.value
+        
+        cpuUsageState = cpuAdjusted.state
+        return usageSmoother.smooth(processes: cpuAdjusted.processes)
+    }
+    
+    private func primeInitialSamples() async throws {
+        let warmupPasses = max(usageSmoother.windowSize, 1)
+        
+        for index in 0..<warmupPasses {
+            _ = try await fetchAndProcessProcesses()
+            
+            if index < warmupPasses - 1 {
+                try await Task.sleep(nanoseconds: initialWarmupIntervalNanoseconds)
+            }
+        }
+    }
+}
+
+struct SystemGroupCPUSmoother: Sendable {
+    let windowSize: Int
+    private var samples: [Double] = []
+    private let systemGroupName = "システム"
+    
+    init(windowSize: Int) {
+        self.windowSize = max(1, windowSize)
+    }
+    
+    mutating func smooth(groups: [ProcessGroup]) -> [ProcessGroup] {
+        guard let systemIndex = groups.firstIndex(where: { $0.appName == systemGroupName }) else {
+            samples.removeAll()
+            return groups
+        }
+        
+        var adjustedGroups = groups
+        let rawSystemCPU = adjustedGroups[systemIndex].rawTotalCPU
+        
+        samples.append(rawSystemCPU)
+        if samples.count > windowSize {
+            samples.removeFirst(samples.count - windowSize)
+        }
+        
+        let smoothedSystemCPU = samples.reduce(0, +) / Double(samples.count)
+        adjustedGroups[systemIndex].smoothedTotalCPU = smoothedSystemCPU
+        return adjustedGroups
+    }
+}
+
+struct CPUUsageDeltaState: Sendable {
+    var cpuTimeTicksByPID: [Int32: UInt64] = [:]
+    var sampleTimestampNanoseconds: UInt64?
+    
+    mutating func removeHistory(forPIDs pids: Set<Int32>) {
+        guard !pids.isEmpty else { return }
+        cpuTimeTicksByPID = cpuTimeTicksByPID.filter { !pids.contains($0.key) }
+    }
+}
+
+struct CPUUsageDeltaComputation: Sendable {
+    let processes: [AppProcessInfo]
+    let state: CPUUsageDeltaState
+}
+
+enum CPUUsageDeltaCalculator {
+    static func calculate(
+        processes: [AppProcessInfo],
+        previousState: CPUUsageDeltaState,
+        timestampNanoseconds: UInt64
+    ) -> CPUUsageDeltaComputation {
+        let pids = Set(processes.map(\.pid))
+        let currentCPUTimeTicksByPID = readCurrentCPUTimeTicks(pids: pids)
+        
+        return calculate(
+            processes: processes,
+            currentCPUTimeTicksByPID: currentCPUTimeTicksByPID,
+            previousState: previousState,
+            timestampNanoseconds: timestampNanoseconds,
+            timebaseNumer: systemTimebase.numer,
+            timebaseDenom: systemTimebase.denom
+        )
+    }
+    
+    static func calculate(
+        processes: [AppProcessInfo],
+        currentCPUTimeTicksByPID: [Int32: UInt64],
+        previousState: CPUUsageDeltaState,
+        timestampNanoseconds: UInt64,
+        timebaseNumer: UInt32,
+        timebaseDenom: UInt32
+    ) -> CPUUsageDeltaComputation {
+        var adjusted = processes
+        let elapsedNanoseconds = elapsedNanoseconds(
+            previousTimestamp: previousState.sampleTimestampNanoseconds,
+            currentTimestamp: timestampNanoseconds
+        )
+        
+        if let elapsedNanoseconds, elapsedNanoseconds > 0 {
+            for index in adjusted.indices {
+                let pid = adjusted[index].pid
+                guard let currentTicks = currentCPUTimeTicksByPID[pid] else { continue }
+                guard let previousTicks = previousState.cpuTimeTicksByPID[pid] else {
+                    adjusted[index].cpuUsage = 0
+                    continue
+                }
+                
+                guard currentTicks >= previousTicks else {
+                    adjusted[index].cpuUsage = 0
+                    continue
+                }
+                
+                let cpuDeltaTicks = currentTicks - previousTicks
+                let cpuDeltaNanoseconds = ticksToNanoseconds(
+                    cpuDeltaTicks,
+                    numer: timebaseNumer,
+                    denom: timebaseDenom
+                )
+                let computedCPU = (cpuDeltaNanoseconds / Double(elapsedNanoseconds)) * 100
+                
+                if computedCPU.isFinite && computedCPU >= 0 {
+                    adjusted[index].cpuUsage = computedCPU
+                } else {
+                    adjusted[index].cpuUsage = 0
+                }
+            }
+        } else {
+            for index in adjusted.indices {
+                adjusted[index].cpuUsage = 0
+            }
+        }
+        
+        return CPUUsageDeltaComputation(
+            processes: adjusted,
+            state: CPUUsageDeltaState(
+                cpuTimeTicksByPID: currentCPUTimeTicksByPID,
+                sampleTimestampNanoseconds: timestampNanoseconds
+            )
+        )
+    }
+    
+    private static let taskInfoSize = Int32(MemoryLayout<proc_taskinfo>.stride)
+    private static let systemTimebase: mach_timebase_info_data_t = {
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        if timebase.denom == 0 {
+            timebase.denom = 1
+        }
+        return timebase
+    }()
+    
+    static func ticksToNanoseconds(_ ticks: UInt64, numer: UInt32, denom: UInt32) -> Double {
+        guard denom != 0 else { return 0 }
+        return (Double(ticks) * Double(numer)) / Double(denom)
+    }
+    
+    private static func readCurrentCPUTimeTicks(pids: Set<Int32>) -> [Int32: UInt64] {
+        var cpuTicksByPID: [Int32: UInt64] = [:]
+        cpuTicksByPID.reserveCapacity(pids.count)
+        
+        for pid in pids {
+            guard let cpuTicks = readCPUTimeTicks(pid: pid) else { continue }
+            cpuTicksByPID[pid] = cpuTicks
+        }
+        
+        return cpuTicksByPID
+    }
+    
+    private static func readCPUTimeTicks(pid: Int32) -> UInt64? {
+        var taskInfo = proc_taskinfo()
+        let result = proc_pidinfo(
+            pid,
+            PROC_PIDTASKINFO,
+            0,
+            &taskInfo,
+            taskInfoSize
+        )
+        
+        guard result == taskInfoSize else { return nil }
+        return taskInfo.pti_total_user &+ taskInfo.pti_total_system
+    }
+    
+    private static func elapsedNanoseconds(
+        previousTimestamp: UInt64?,
+        currentTimestamp: UInt64
+    ) -> UInt64? {
+        guard let previousTimestamp, currentTimestamp > previousTimestamp else {
+            return nil
+        }
+        return currentTimestamp - previousTimestamp
     }
 }
 

@@ -237,6 +237,125 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(reset.memoryUsage, 1000, accuracy: 0.001)
     }
     
+    func testCPUUsageDeltaCalculatorUsesPIDCPUTimeDelta() {
+        let processes = [makeProcess(pid: 10, name: "A", cpu: 999, memory: 100)]
+        let previousState = CPUUsageDeltaState(
+            cpuTimeTicksByPID: [10: 100_000_000],
+            sampleTimestampNanoseconds: 1_000_000_000
+        )
+        
+        let result = CPUUsageDeltaCalculator.calculate(
+            processes: processes,
+            currentCPUTimeTicksByPID: [10: 112_000_000],
+            previousState: previousState,
+            timestampNanoseconds: 2_000_000_000,
+            timebaseNumer: 125,
+            timebaseDenom: 3
+        )
+        
+        XCTAssertEqual(result.processes.count, 1)
+        XCTAssertEqual(result.processes[0].cpuUsage, 50, accuracy: 0.001)
+        XCTAssertEqual(result.state.cpuTimeTicksByPID[10], 112_000_000)
+        XCTAssertEqual(result.state.sampleTimestampNanoseconds, 2_000_000_000)
+    }
+    
+    func testCPUUsageDeltaCalculatorReturnsZeroWhenNoPreviousSample() {
+        let processes = [makeProcess(pid: 10, name: "A", cpu: 12.5, memory: 100)]
+        
+        let result = CPUUsageDeltaCalculator.calculate(
+            processes: processes,
+            currentCPUTimeTicksByPID: [10: 1_500_000],
+            previousState: CPUUsageDeltaState(),
+            timestampNanoseconds: 2_000_000_000,
+            timebaseNumer: 125,
+            timebaseDenom: 3
+        )
+        
+        XCTAssertEqual(result.processes[0].cpuUsage, 0, accuracy: 0.001)
+    }
+    
+    func testCPUUsageDeltaCalculatorReturnsZeroForNewPIDInElapsedWindow() {
+        let processes = [makeProcess(pid: 20, name: "B", cpu: 77.7, memory: 100)]
+        let previousState = CPUUsageDeltaState(
+            cpuTimeTicksByPID: [10: 1_000_000],
+            sampleTimestampNanoseconds: 1_000_000_000
+        )
+        
+        let result = CPUUsageDeltaCalculator.calculate(
+            processes: processes,
+            currentCPUTimeTicksByPID: [20: 2_000_000],
+            previousState: previousState,
+            timestampNanoseconds: 2_000_000_000,
+            timebaseNumer: 125,
+            timebaseDenom: 3
+        )
+        
+        XCTAssertEqual(result.processes[0].cpuUsage, 0, accuracy: 0.001)
+    }
+    
+    func testCPUUsageDeltaCalculatorPrunesRemovedPIDsFromState() {
+        let processes = [makeProcess(pid: 20, name: "B", cpu: 10, memory: 100)]
+        let previousState = CPUUsageDeltaState(
+            cpuTimeTicksByPID: [10: 1_000_000, 20: 2_000_000],
+            sampleTimestampNanoseconds: 1_000_000_000
+        )
+        
+        let result = CPUUsageDeltaCalculator.calculate(
+            processes: processes,
+            currentCPUTimeTicksByPID: [20: 2_500_000],
+            previousState: previousState,
+            timestampNanoseconds: 2_000_000_000,
+            timebaseNumer: 125,
+            timebaseDenom: 3
+        )
+        
+        XCTAssertNil(result.state.cpuTimeTicksByPID[10])
+        XCTAssertEqual(result.state.cpuTimeTicksByPID[20], 2_500_000)
+    }
+    
+    func testCPUUsageDeltaCalculatorConvertsTicksToNanosecondsWithTimebase() {
+        let nanoseconds = CPUUsageDeltaCalculator.ticksToNanoseconds(
+            24,
+            numer: 125,
+            denom: 3
+        )
+        
+        XCTAssertEqual(nanoseconds, 1_000, accuracy: 0.001)
+    }
+    
+    func testSystemGroupCPUSmootherSmoothsOnlySystemGroup() throws {
+        var smoother = SystemGroupCPUSmoother(windowSize: 3)
+        
+        let first = smoother.smooth(groups: [
+            makeGroup(name: "システム", cpu: 90, isSystem: true),
+            makeGroup(name: "AppA", cpu: 30, isSystem: false)
+        ])
+        let firstSystemCPU = try XCTUnwrap(first.first(where: { $0.appName == "システム" })?.totalCPU)
+        let firstAppCPU = try XCTUnwrap(first.first(where: { $0.appName == "AppA" })?.totalCPU)
+        XCTAssertEqual(firstSystemCPU, 90, accuracy: 0.001)
+        XCTAssertEqual(firstAppCPU, 30, accuracy: 0.001)
+        
+        let second = smoother.smooth(groups: [
+            makeGroup(name: "システム", cpu: 30, isSystem: true),
+            makeGroup(name: "AppA", cpu: 30, isSystem: false)
+        ])
+        let secondSystemCPU = try XCTUnwrap(second.first(where: { $0.appName == "システム" })?.totalCPU)
+        let secondAppCPU = try XCTUnwrap(second.first(where: { $0.appName == "AppA" })?.totalCPU)
+        XCTAssertEqual(secondSystemCPU, 60, accuracy: 0.001)
+        XCTAssertEqual(secondAppCPU, 30, accuracy: 0.001)
+    }
+    
+    func testSystemGroupCPUSmootherResetsWhenSystemGroupDisappears() throws {
+        var smoother = SystemGroupCPUSmoother(windowSize: 3)
+        
+        _ = smoother.smooth(groups: [makeGroup(name: "システム", cpu: 90, isSystem: true)])
+        _ = smoother.smooth(groups: [makeGroup(name: "Other", cpu: 10, isSystem: false)])
+        let resumed = smoother.smooth(groups: [makeGroup(name: "システム", cpu: 30, isSystem: true)])
+        
+        let resumedCPU = try XCTUnwrap(resumed.first?.totalCPU)
+        XCTAssertEqual(resumedCPU, 30, accuracy: 0.001)
+    }
+    
     private func makeProcess(
         pid: Int32,
         name: String,
@@ -252,6 +371,24 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
             description: "desc",
             isSystemProcess: false,
             parentApp: nil
+        )
+    }
+    
+    private func makeGroup(name: String, cpu: Double, isSystem: Bool) -> ProcessGroup {
+        ProcessGroup(
+            appName: name,
+            processes: [
+                AppProcessInfo(
+                    pid: Int32(abs(name.hashValue % 100000) + 1),
+                    name: name,
+                    user: "user",
+                    cpuUsage: cpu,
+                    memoryUsage: 100,
+                    description: "desc",
+                    isSystemProcess: isSystem,
+                    parentApp: nil
+                )
+            ]
         )
     }
 }

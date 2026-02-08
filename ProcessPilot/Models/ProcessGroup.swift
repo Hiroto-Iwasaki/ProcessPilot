@@ -4,9 +4,14 @@ struct ProcessGroup: Identifiable, Equatable, Sendable {
     var id: String { appName }
     let appName: String
     var processes: [AppProcessInfo]
+    var smoothedTotalCPU: Double? = nil
+    
+    var rawTotalCPU: Double {
+        processes.reduce(0) { $0 + $1.cpuUsage }
+    }
     
     var totalCPU: Double {
-        processes.reduce(0) { $0 + $1.cpuUsage }
+        smoothedTotalCPU ?? rawTotalCPU
     }
     
     var totalMemory: Double {
