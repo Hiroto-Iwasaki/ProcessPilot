@@ -54,6 +54,50 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         XCTAssertGreaterThan(process.name.count, 20)
     }
     
+    func testParseProcessesStripsFilePathArgumentFromAppCommand() throws {
+        let output = """
+        testuser 999005 0.9 0.2 /Applications/TextEdit.app/Contents/MacOS/TextEdit /Users/test/Documents/note.txt
+        """
+        
+        let processes = ProcessSnapshotBuilder.parseProcesses(output)
+        XCTAssertEqual(processes.count, 1)
+        
+        let process = try XCTUnwrap(processes.first)
+        XCTAssertEqual(process.executablePath, "/Applications/TextEdit.app/Contents/MacOS/TextEdit")
+        XCTAssertEqual(process.name, "TextEdit")
+        XCTAssertEqual(process.parentApp, "TextEdit")
+    }
+    
+    func testParseProcessesDoesNotTruncateAppPathContainingHyphen() throws {
+        let output = """
+        testuser 999006 1.3 0.4 /Applications/Visual Studio Code - Insiders.app/Contents/MacOS/Electron --type=renderer
+        """
+        
+        let processes = ProcessSnapshotBuilder.parseProcesses(output)
+        XCTAssertEqual(processes.count, 1)
+        
+        let process = try XCTUnwrap(processes.first)
+        XCTAssertEqual(
+            process.executablePath,
+            "/Applications/Visual Studio Code - Insiders.app/Contents/MacOS/Electron"
+        )
+        XCTAssertEqual(process.parentApp, "Visual Studio Code - Insiders")
+    }
+    
+    func testParseProcessesStripsSingleHyphenArgumentFromAppCommand() throws {
+        let output = """
+        testuser 999007 0.5 0.1 /Applications/TextEdit.app/Contents/MacOS/TextEdit -psn_0_12345
+        """
+        
+        let processes = ProcessSnapshotBuilder.parseProcesses(output)
+        XCTAssertEqual(processes.count, 1)
+        
+        let process = try XCTUnwrap(processes.first)
+        XCTAssertEqual(process.executablePath, "/Applications/TextEdit.app/Contents/MacOS/TextEdit")
+        XCTAssertEqual(process.name, "TextEdit")
+        XCTAssertEqual(process.parentApp, "TextEdit")
+    }
+    
     func testSortAndGroupProcesses() {
         let input = [
             AppProcessInfo(

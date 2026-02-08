@@ -20,40 +20,43 @@ struct ContentView: View {
         NavigationSplitView {
             // サイドバー
             SidebarView(monitor: monitor)
-                .frame(minWidth: 200)
+                .frame(width: 200)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 200, max: 200)
         } content: {
             // メインコンテンツ
             VStack(spacing: 0) {
                 ProcessListView(
-                    monitor: monitor,
+                    processes: monitor.processes,
+                    groups: monitor.groups,
+                    showGrouped: monitor.showGrouped,
                     selection: $selection
                 )
                 .frame(minWidth: 400, maxHeight: .infinity)
                 
-                MainContentBottomBarView(
-                    sortBy: monitor.sortBy,
-                    metrics: monitor.bottomBarMetrics
-                )
+                BottomBarHostView(sortBy: monitor.sortBy)
             }
         } detail: {
-            // 詳細パネル
-            if let group = selectedGroup {
-                ProcessGroupDetailView(
-                    group: group,
-                    onTerminateGroup: { handleTerminate(group: group, force: false) },
-                    onForceTerminateGroup: { handleTerminate(group: group, force: true) }
-                )
-            } else if let process = selectedProcess {
-                ProcessDetailView(
-                    process: process,
-                    onTerminate: { handleTerminate(process: process, force: false) },
-                    onForceTerminate: { handleTerminate(process: process, force: true) }
-                )
-            } else {
-                Text("グループまたはプロセスを選択してください")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group {
+                // 詳細パネル
+                if let group = selectedGroup {
+                    ProcessGroupDetailView(
+                        group: group,
+                        onTerminateGroup: { handleTerminate(group: group, force: false) },
+                        onForceTerminateGroup: { handleTerminate(group: group, force: true) }
+                    )
+                } else if let process = selectedProcess {
+                    ProcessDetailView(
+                        process: process,
+                        onTerminate: { handleTerminate(process: process, force: false) },
+                        onForceTerminate: { handleTerminate(process: process, force: true) }
+                    )
+                } else {
+                    Text("グループまたはプロセスを選択してください")
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
+            .navigationSplitViewColumnWidth(280)
         }
         .frame(minWidth: 900, minHeight: 600)
         .task {
@@ -243,6 +246,24 @@ struct ContentView: View {
         let failedCount: Int
         let skippedCriticalCount: Int
         let endedProcessPIDs: Set<Int32>
+    }
+}
+
+private struct BottomBarHostView: View {
+    let sortBy: ProcessMonitor.SortOption
+    @StateObject private var bottomBarMonitor = BottomBarMonitor()
+    
+    var body: some View {
+        MainContentBottomBarView(
+            sortBy: sortBy,
+            metrics: bottomBarMonitor.metrics
+        )
+        .task {
+            bottomBarMonitor.startAutoRefresh()
+        }
+        .onDisappear {
+            bottomBarMonitor.stopAutoRefresh()
+        }
     }
 }
 

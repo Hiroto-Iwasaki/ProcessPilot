@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ProcessRowView: View {
     let process: AppProcessInfo
@@ -13,9 +14,18 @@ struct ProcessRowView: View {
                     .fill(sourceTintColor.opacity(0.2))
                     .frame(width: 28, height: 28)
                 
-                Image(systemName: processIcon)
-                    .font(.caption)
-                    .foregroundColor(sourceTintColor)
+                if let appIcon {
+                    Image(nsImage: appIcon)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: 18, height: 18)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else {
+                    Image(systemName: processIcon)
+                        .font(.caption)
+                        .foregroundColor(sourceTintColor)
+                }
             }
             
             // プロセス情報
@@ -136,6 +146,10 @@ struct ProcessRowView: View {
         case .unknown:
             return .gray
         }
+    }
+    
+    private var appIcon: NSImage? {
+        ProcessAppIconProvider.icon(forExecutablePath: process.executablePath)
     }
 }
 

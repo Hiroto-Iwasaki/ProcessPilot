@@ -1,11 +1,19 @@
 import Foundation
 
 struct ProcessDescriptions {
+    private typealias DescriptionCandidate = (key: String, value: String)
+    
     private static let unresolvedDescription = "不明なプロセス"
     private static let bundleSuffixes = [".app", ".xpc", ".appex"]
     private static let bundlePathMarkers = [".app/", ".xpc/", ".appex/"]
+    private static let bundleDescriptionCacheLimit = 2048
+    private static let cacheOrderCompactionThreshold = 1024
     private static var bundleDescriptionCache: [String: String] = [:]
     private static var bundleDescriptionMissCache: Set<String> = []
+    private static var bundleDescriptionCacheOrder: [String] = []
+    private static var bundleDescriptionMissCacheOrder: [String] = []
+    private static var bundleDescriptionCacheHeadIndex = 0
+    private static var bundleDescriptionMissCacheHeadIndex = 0
     private static let cacheLock = NSLock()
     
     // 一般的なmacOSプロセスの説明辞書
@@ -154,6 +162,24 @@ struct ProcessDescriptions {
         "storeassetd": "App Store アセット管理",
     ]
     
+    private static let partialDescriptionIndex: [Character: [DescriptionCandidate]] = {
+        var index: [Character: [DescriptionCandidate]] = [:]
+        
+        for (key, value) in descriptions {
+            let normalizedKey = key.lowercased()
+            guard let initial = normalizedKey.first else { continue }
+            index[initial, default: []].append((normalizedKey, value))
+        }
+        
+        for key in index.keys {
+            index[key]?.sort { lhs, rhs in
+                lhs.key.count > rhs.key.count
+            }
+        }
+        
+        return index
+    }()
+    
     // システムプロセス（終了すると問題が起きる可能性があるもの）
     static let systemProcesses: Set<String> = [
         "kernel_task",
@@ -197,16 +223,15 @@ struct ProcessDescriptions {
     ]
     
     static func getDescription(for processName: String, executablePath: String? = nil) -> String {
+        let normalizedProcessName = processName.trimmingCharacters(in: .whitespacesAndNewlines)
+        
         // 完全一致で検索
-        if let desc = descriptions[processName] {
+        if let desc = descriptions[normalizedProcessName] {
             return desc
         }
         
-        // 部分一致で検索（プロセス名が途中で切れている場合）
-        for (key, value) in descriptions {
-            if processName.hasPrefix(key) || key.hasPrefix(processName) {
-                return value
-            }
+        if let partialDescription = getPartialMatchDescription(for: normalizedProcessName) {
+            return partialDescription
         }
         
         if shouldAttemptBundleDescriptionLookup(executablePath: executablePath),
@@ -256,13 +281,21 @@ struct ProcessDescriptions {
         guard let bundleURL = resolveBundleURL(from: executablePath),
               let bundleDescription = loadBundleDescription(from: bundleURL) else {
             cacheLock.lock()
-            bundleDescriptionMissCache.insert(executablePath)
+            if bundleDescriptionMissCache.insert(executablePath).inserted {
+                bundleDescriptionMissCacheOrder.append(executablePath)
+            }
+            trimBundleDescriptionMissCacheIfNeededLocked()
             cacheLock.unlock()
             return nil
         }
         
         cacheLock.lock()
+        if bundleDescriptionCache[executablePath] == nil {
+            bundleDescriptionCacheOrder.append(executablePath)
+        }
         bundleDescriptionCache[executablePath] = bundleDescription
+        bundleDescriptionMissCache.remove(executablePath)
+        trimBundleDescriptionCacheIfNeededLocked()
         cacheLock.unlock()
         return bundleDescription
     }
@@ -301,5 +334,71 @@ struct ProcessDescriptions {
         default:
             return nil
         }
+    }
+    
+    private static func getPartialMatchDescription(for processName: String) -> String? {
+        let normalizedProcessName = processName.lowercased()
+        guard let initial = normalizedProcessName.first,
+              let candidates = partialDescriptionIndex[initial] else {
+            return nil
+        }
+        
+        for candidate in candidates where
+            normalizedProcessName.hasPrefix(candidate.key) ||
+            candidate.key.hasPrefix(normalizedProcessName) {
+            return candidate.value
+        }
+        
+        return nil
+    }
+    
+    private static func trimBundleDescriptionCacheIfNeededLocked() {
+        while bundleDescriptionCache.count > bundleDescriptionCacheLimit {
+            if bundleDescriptionCacheHeadIndex >= bundleDescriptionCacheOrder.count {
+                bundleDescriptionCacheOrder = Array(bundleDescriptionCache.keys)
+                bundleDescriptionCacheHeadIndex = 0
+                if bundleDescriptionCacheOrder.isEmpty { break }
+            }
+            
+            let oldest = bundleDescriptionCacheOrder[bundleDescriptionCacheHeadIndex]
+            bundleDescriptionCacheHeadIndex += 1
+            bundleDescriptionCache.removeValue(forKey: oldest)
+        }
+        compactBundleDescriptionCacheOrderIfNeededLocked()
+    }
+    
+    private static func trimBundleDescriptionMissCacheIfNeededLocked() {
+        while bundleDescriptionMissCache.count > bundleDescriptionCacheLimit {
+            if bundleDescriptionMissCacheHeadIndex >= bundleDescriptionMissCacheOrder.count {
+                bundleDescriptionMissCacheOrder = Array(bundleDescriptionMissCache)
+                bundleDescriptionMissCacheHeadIndex = 0
+                if bundleDescriptionMissCacheOrder.isEmpty { break }
+            }
+            
+            let oldest = bundleDescriptionMissCacheOrder[bundleDescriptionMissCacheHeadIndex]
+            bundleDescriptionMissCacheHeadIndex += 1
+            bundleDescriptionMissCache.remove(oldest)
+        }
+        compactBundleDescriptionMissCacheOrderIfNeededLocked()
+    }
+    
+    private static func compactBundleDescriptionCacheOrderIfNeededLocked() {
+        guard bundleDescriptionCacheHeadIndex >= cacheOrderCompactionThreshold,
+              bundleDescriptionCacheHeadIndex * 2 >= bundleDescriptionCacheOrder.count else {
+            return
+        }
+        
+        bundleDescriptionCacheOrder.removeFirst(bundleDescriptionCacheHeadIndex)
+        bundleDescriptionCacheHeadIndex = 0
+    }
+    
+    private static func compactBundleDescriptionMissCacheOrderIfNeededLocked() {
+        guard bundleDescriptionMissCacheHeadIndex >= cacheOrderCompactionThreshold,
+              bundleDescriptionMissCacheHeadIndex * 2 >= bundleDescriptionMissCacheOrder.count else {
+            return
+        }
+        
+        bundleDescriptionMissCacheOrder.removeFirst(bundleDescriptionMissCacheHeadIndex)
+        bundleDescriptionMissCacheHeadIndex = 0
     }
 }

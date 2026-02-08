@@ -49,10 +49,19 @@ struct ProcessDetailView: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(sourceTintColor.opacity(0.2))
                     .frame(width: 56, height: 56)
-                
-                Image(systemName: sourceIcon)
-                    .font(.title)
-                    .foregroundColor(sourceTintColor)
+
+                if let appIcon = ProcessAppIconProvider.icon(forExecutablePath: process.executablePath) {
+                    Image(nsImage: appIcon)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: 34, height: 34)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                } else {
+                    Image(systemName: sourceIcon)
+                        .font(.title)
+                        .foregroundColor(sourceTintColor)
+                }
             }
             
             VStack(alignment: .leading, spacing: 4) {

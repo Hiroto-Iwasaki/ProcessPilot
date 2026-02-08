@@ -34,7 +34,7 @@ private struct CPUBottomPanel: View {
                 metricRow(title: "アイドル状態:", value: metrics.idlePercent, color: .primary)
             }
             .padding(16)
-            .frame(width: 300, alignment: .leading)
+            .frame(width: 200, alignment: .leading)
             
             Divider()
             
@@ -107,7 +107,7 @@ private struct MemoryBottomPanel: View {
                     .monospacedDigit()
             }
             .padding(16)
-            .frame(width: 300, alignment: .leading)
+            .frame(width: 150, alignment: .leading)
             
             Divider()
             
@@ -140,17 +140,17 @@ private struct MemoryBottomPanel: View {
 
 private struct MemoryMetricColumn: View {
     let rows: [(String, String)]
+    private let metricFontSize: CGFloat = 12
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                 HStack(spacing: 10) {
                     Text(row.0)
-                        .font(.title3)
-                        .fontWeight(.semibold)
+                        .font(.system(size: metricFontSize, weight: .semibold))
                     Spacer(minLength: 8)
                     Text(row.1)
-                        .font(.title3)
+                        .font(.system(size: metricFontSize))
                         .monospacedDigit()
                 }
                 

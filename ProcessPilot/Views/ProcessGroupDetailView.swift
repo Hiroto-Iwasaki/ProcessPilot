@@ -37,10 +37,19 @@ struct ProcessGroupDetailView: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(group.isSystemGroup ? Color.orange.opacity(0.2) : Color.blue.opacity(0.2))
                     .frame(width: 56, height: 56)
-                
-                Image(systemName: group.isSystemGroup ? "gearshape.fill" : "square.stack.3d.up.fill")
-                    .font(.title)
-                    .foregroundColor(group.isSystemGroup ? .orange : .blue)
+
+                if let appIcon = ProcessAppIconProvider.icon(forExecutablePath: group.representativeExecutablePath) {
+                    Image(nsImage: appIcon)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: 34, height: 34)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                } else {
+                    Image(systemName: group.isSystemGroup ? "gearshape.fill" : "square.stack.3d.up.fill")
+                        .font(.title)
+                        .foregroundColor(group.isSystemGroup ? .orange : .blue)
+                }
             }
             
             VStack(alignment: .leading, spacing: 4) {

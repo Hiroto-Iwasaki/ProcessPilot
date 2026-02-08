@@ -1,15 +1,17 @@
 import SwiftUI
 
 struct ProcessListView: View {
-    @ObservedObject var monitor: ProcessMonitor
+    let processes: [AppProcessInfo]
+    let groups: [ProcessGroup]
+    let showGrouped: Bool
     @Binding var selection: ProcessSelection?
     
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                if monitor.showGrouped {
+                if showGrouped {
                     // グループ化表示
-                    ForEach(monitor.groups) { group in
+                    ForEach(groups) { group in
                         ProcessGroupView(
                             group: group,
                             selection: $selection
@@ -17,7 +19,7 @@ struct ProcessListView: View {
                     }
                 } else {
                     // フラット表示
-                    ForEach(monitor.processes) { process in
+                    ForEach(processes) { process in
                         ProcessRowView(
                             process: process,
                             isSelected: selection == .process(process.pid)
@@ -47,60 +49,76 @@ struct ProcessGroupView: View {
     var body: some View {
         VStack(spacing: 0) {
             // グループヘッダー
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    selection = .group(group.id)
-                    isExpanded.toggle()
-                }
-            }) {
-                HStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                }) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .frame(width: 12)
-                    
-                    // アイコン
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(group.isSystemGroup ? Color.orange.opacity(0.2) : Color.blue.opacity(0.2))
-                            .frame(width: 32, height: 32)
-                        
-                        Image(systemName: group.isSystemGroup ? "gearshape.fill" : "app.fill")
-                            .foregroundColor(group.isSystemGroup ? .orange : .blue)
-                    }
-                    
-                    // グループ名
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(group.appName)
-                            .fontWeight(.medium)
-                        
-                        Text("\(group.processCount) プロセス")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    Spacer()
-                    
-                    // リソース使用量
-                    HStack(spacing: 16) {
-                        ResourceBadge(
-                            icon: "cpu",
-                            value: String(format: "%.1f%%", group.totalCPU),
-                            color: ProcessDisplayMetrics.cpuColor(for: group.totalCPU)
-                        )
-                        
-                        ResourceBadge(
-                            icon: "memorychip",
-                            value: ProcessDisplayMetrics.memoryText(for: group.totalMemory),
-                            color: ProcessDisplayMetrics.memoryColor(for: group.totalMemory)
-                        )
-                    }
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                
+                Button(action: {
+                    selection = .group(group.id)
+                }) {
+                    HStack(spacing: 12) {
+                        // アイコン
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(group.isSystemGroup ? Color.orange.opacity(0.2) : Color.blue.opacity(0.2))
+                                .frame(width: 32, height: 32)
+
+                            if let appIcon = ProcessAppIconProvider.icon(forExecutablePath: group.representativeExecutablePath) {
+                                Image(nsImage: appIcon)
+                                    .resizable()
+                                    .interpolation(.high)
+                                    .scaledToFit()
+                                    .frame(width: 20, height: 20)
+                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                            } else {
+                                Image(systemName: group.isSystemGroup ? "gearshape.fill" : "app.fill")
+                                    .foregroundColor(group.isSystemGroup ? .orange : .blue)
+                            }
+                        }
+                        
+                        // グループ名
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(group.appName)
+                                .fontWeight(.medium)
+                            
+                            Text("\(group.processCount) プロセス")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        // リソース使用量
+                        HStack(spacing: 16) {
+                            ResourceBadge(
+                                icon: "cpu",
+                                value: String(format: "%.1f%%", group.totalCPU),
+                                color: ProcessDisplayMetrics.cpuColor(for: group.totalCPU)
+                            )
+                            
+                            ResourceBadge(
+                                icon: "memorychip",
+                                value: ProcessDisplayMetrics.memoryText(for: group.totalMemory),
+                                color: ProcessDisplayMetrics.memoryColor(for: group.totalMemory)
+                            )
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
             .background(
                 selection == .group(group.id)
                     ? Color.accentColor.opacity(0.12)
@@ -166,7 +184,9 @@ struct ResourceBadge: View {
 
 #Preview {
     ProcessListView(
-        monitor: ProcessMonitor(),
+        processes: [],
+        groups: [],
+        showGrouped: true,
         selection: .constant(nil)
     )
 }

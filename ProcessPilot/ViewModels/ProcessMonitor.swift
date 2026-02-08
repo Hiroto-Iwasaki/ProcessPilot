@@ -15,10 +15,9 @@ class ProcessMonitor: ObservableObject {
     @Published var sortBy: SortOption = .cpu
     @Published var showGrouped = true
     @Published var showHighUsageFirst = true
-    @Published private(set) var bottomBarMetrics = BottomBarMetrics.empty
     @Published var filterText = "" {
         didSet {
-            applySortingAndGrouping()
+            scheduleApplySortingAndGrouping()
         }
     }
     
@@ -26,15 +25,21 @@ class ProcessMonitor: ObservableObject {
     private var usageSmoother = UsageSmoother(windowSize: 3)
     private var systemGroupCPUSmoother = SystemGroupCPUSmoother(windowSize: 3)
     private var cpuUsageState = CPUUsageDeltaState()
-    private var bottomBarHistory = BottomBarHistory(historyLimit: 48)
     private var snapshotTask: Task<Void, Never>?
+    private var filterDebounceTask: Task<Void, Never>?
     private var snapshotVersion: UInt64 = 0
     private var hasPrimedInitialSamples = false
     private let initialWarmupIntervalNanoseconds: UInt64 = 250_000_000
+    private let filterDebounceIntervalNanoseconds: UInt64 = 200_000_000
     
     enum SortOption: String, CaseIterable, Sendable {
         case cpu = "CPU"
         case memory = "メモリ"
+    }
+    
+    deinit {
+        snapshotTask?.cancel()
+        filterDebounceTask?.cancel()
     }
     
     func refreshProcesses() async {
@@ -48,11 +53,7 @@ class ProcessMonitor: ObservableObject {
                 hasPrimedInitialSamples = true
             }
             
-            async let processedProcesses = fetchAndProcessProcesses()
-            async let systemSnapshot = fetchBottomBarSnapshot()
-            
-            allProcesses = try await processedProcesses
-            bottomBarMetrics = bottomBarHistory.nextMetrics(from: await systemSnapshot)
+            allProcesses = try await fetchAndProcessProcesses()
             applySortingAndGrouping()
         } catch is CancellationError {
             return
@@ -62,11 +63,13 @@ class ProcessMonitor: ObservableObject {
     }
     
     func changeSortOption(_ option: SortOption) {
+        filterDebounceTask?.cancel()
         sortBy = option
         applySortingAndGrouping()
     }
     
     func changeHighUsageOrder(_ isEnabled: Bool) {
+        filterDebounceTask?.cancel()
         showHighUsageFirst = isEnabled
         applySortingAndGrouping()
     }
@@ -103,6 +106,11 @@ class ProcessMonitor: ObservableObject {
                 filterText: sourceFilterText,
                 showHighUsageFirst: sourceShowHighUsageFirst
             )
+            
+            guard !Task.isCancelled else {
+                return
+            }
+            
             let groupedProcesses = ProcessSnapshotBuilder.groupProcesses(
                 visibleProcesses,
                 sortBy: sourceSortBy,
@@ -128,6 +136,20 @@ class ProcessMonitor: ObservableObject {
         }
     }
     
+    private func scheduleApplySortingAndGrouping() {
+        filterDebounceTask?.cancel()
+        filterDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: self?.filterDebounceIntervalNanoseconds ?? 200_000_000)
+            } catch {
+                return
+            }
+            
+            guard !Task.isCancelled else { return }
+            self?.applySortingAndGrouping()
+        }
+    }
+    
     private func fetchProcesses() async throws -> [AppProcessInfo] {
         try await Task.detached(priority: .utility) {
             try ProcessSnapshotBuilder.fetchProcesses()
@@ -150,12 +172,6 @@ class ProcessMonitor: ObservableObject {
         return usageSmoother.smooth(processes: cpuAdjusted.processes)
     }
     
-    private func fetchBottomBarSnapshot() async -> BottomBarRawSnapshot {
-        await Task.detached(priority: .utility) {
-            SystemMetricsCollector.capture()
-        }.value
-    }
-    
     private func primeInitialSamples() async throws {
         let warmupPasses = max(usageSmoother.windowSize, 1)
         
@@ -165,6 +181,55 @@ class ProcessMonitor: ObservableObject {
             if index < warmupPasses - 1 {
                 try await Task.sleep(nanoseconds: initialWarmupIntervalNanoseconds)
             }
+        }
+    }
+}
+
+@MainActor
+final class BottomBarMonitor: ObservableObject {
+    @Published private(set) var metrics = BottomBarMetrics.empty
+    
+    private var history = BottomBarHistory(historyLimit: 48)
+    private var autoRefreshTask: Task<Void, Never>?
+    private let refreshIntervalNanoseconds: UInt64 = 1_000_000_000
+    
+    func startAutoRefresh() {
+        guard autoRefreshTask == nil else { return }
+        
+        autoRefreshTask = Task { [weak self] in
+            await self?.runAutoRefreshLoop()
+        }
+    }
+    
+    func stopAutoRefresh() {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = nil
+    }
+    
+    func refreshOnce() async {
+        let snapshot = await Task.detached(priority: .utility) {
+            SystemMetricsCollector.capture()
+        }.value
+        
+        metrics = history.nextMetrics(from: snapshot)
+    }
+    
+    private func runAutoRefreshLoop() async {
+        defer {
+            autoRefreshTask = nil
+        }
+        
+        await refreshOnce()
+        
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: refreshIntervalNanoseconds)
+            } catch {
+                break
+            }
+            
+            guard !Task.isCancelled else { break }
+            await refreshOnce()
         }
     }
 }
@@ -710,6 +775,27 @@ enum ProcessSnapshotBuilder {
         pattern: #"^\s*(\S+)\s+(\d+)\s+([0-9.]+)\s+([0-9.]+)\s+(.*)$"#
     )
     
+    private struct ExecutablePathCacheEntry {
+        let commandSignature: String
+        let executablePath: String
+    }
+    
+    private struct ExecutablePathMissKey: Hashable {
+        let pid: Int32
+        let commandSignature: String
+    }
+    
+    private enum ExecutablePathCacheKey: Hashable {
+        case hit(Int32)
+        case miss(ExecutablePathMissKey)
+    }
+    
+    private static let executablePathCacheLimit = 4096
+    private static var executablePathCache: [Int32: ExecutablePathCacheEntry] = [:]
+    private static var executablePathMissCache: Set<ExecutablePathMissKey> = []
+    private static var executablePathCacheOrder: [ExecutablePathCacheKey] = []
+    private static let executablePathCacheLock = NSLock()
+    
     static func fetchProcesses() throws -> [AppProcessInfo] {
         let output = try runPS()
         return parseProcesses(output)
@@ -865,6 +951,7 @@ enum ProcessSnapshotBuilder {
     static func parseProcesses(_ output: String) -> [AppProcessInfo] {
         var newProcesses: [AppProcessInfo] = []
         let lines = output.components(separatedBy: "\n")
+        let physicalMemoryGB = getPhysicalMemoryGB()
         
         for line in lines {
             guard let parsed = parsePSLine(line) else { continue }
@@ -876,7 +963,7 @@ enum ProcessSnapshotBuilder {
             let commandPath = parsed.command
             let executablePath = resolveExecutablePath(pid: pid, commandPath: commandPath)
             let processName = executablePath.map(extractProcessName(fromExecutablePath:)) ?? extractProcessName(fromCommandPath: commandPath)
-            let memoryMB = mem * getPhysicalMemoryGB() * 10.24
+            let memoryMB = mem * physicalMemoryGB * 10.24
             let isSystemProcess = ProcessDescriptions.isSystemProcess(processName) || isSystemPath(executablePath)
             
             let process = AppProcessInfo(
@@ -959,23 +1046,13 @@ enum ProcessSnapshotBuilder {
         let trimmed = commandPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         
-        if let argumentStart = trimmed.range(of: " --") {
-            let candidate = String(trimmed[..<argumentStart.lowerBound])
-            if candidate.hasPrefix("/") {
-                return candidate
-            }
-        }
-        
         if !trimmed.contains(" ") {
             return trimmed
         }
         
-        if trimmed.hasPrefix("/") && (
-            trimmed.localizedCaseInsensitiveContains(".app/") ||
-            trimmed.localizedCaseInsensitiveContains(".xpc/") ||
-            trimmed.localizedCaseInsensitiveContains(".appex/")
-        ) {
-            return trimmed
+        if trimmed.hasPrefix("/"),
+           let bundleExecutablePath = extractBundleExecutablePath(from: trimmed) {
+            return bundleExecutablePath
         }
         
         let firstToken = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
@@ -985,11 +1062,48 @@ enum ProcessSnapshotBuilder {
     }
     
     private static func resolveExecutablePath(pid: Int32, commandPath: String) -> String? {
+        let commandExecutablePath = extractExecutablePath(from: commandPath)
+        if let commandExecutablePath,
+           shouldTrustCommandExecutablePath(commandExecutablePath, originalCommandPath: commandPath) {
+            cacheExecutablePath(
+                pid: pid,
+                commandSignature: commandSignature(from: commandExecutablePath),
+                executablePath: commandExecutablePath
+            )
+            return commandExecutablePath
+        }
+        
+        let signature = commandSignature(from: commandExecutablePath ?? commandPath)
+        
+        if let cachedPath = cachedExecutablePath(pid: pid, commandSignature: signature) {
+            return cachedPath
+        }
+        
+        if isExecutablePathKnownMiss(pid: pid, commandSignature: signature) {
+            return commandExecutablePath
+        }
+        
         if let pidPath = executablePathFromPID(pid: pid) {
+            cacheExecutablePath(
+                pid: pid,
+                commandSignature: signature,
+                executablePath: pidPath
+            )
             return pidPath
         }
         
-        return extractExecutablePath(from: commandPath)
+        if let commandExecutablePath,
+           shouldUseCommandExecutablePath(commandExecutablePath) {
+            cacheExecutablePath(
+                pid: pid,
+                commandSignature: signature,
+                executablePath: commandExecutablePath
+            )
+            return commandExecutablePath
+        }
+        
+        cacheExecutablePathMiss(pid: pid, commandSignature: signature)
+        return commandExecutablePath
     }
     
     private static func executablePathFromPID(pid: Int32) -> String? {
@@ -1011,5 +1125,145 @@ enum ProcessSnapshotBuilder {
     
     private static func getPhysicalMemoryGB() -> Double {
         Double(Foundation.ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
+    }
+    
+    private static func shouldUseCommandExecutablePath(_ path: String) -> Bool {
+        let normalizedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedPath.hasPrefix("/")
+    }
+    
+    private static func shouldTrustCommandExecutablePath(_ extractedPath: String, originalCommandPath: String) -> Bool {
+        guard shouldUseCommandExecutablePath(extractedPath) else {
+            return false
+        }
+        
+        let trimmedCommand = originalCommandPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedCommand.contains(" ") else {
+            return true
+        }
+        
+        // bundle path + spaces は引数切り分けが曖昧になりやすいので、
+        // proc_pidpath を優先して正確な実行パスを取得する。
+        if isBundleExecutablePath(extractedPath) {
+            return false
+        }
+        
+        return true
+    }
+    
+    private static func extractBundleExecutablePath(from commandPath: String) -> String? {
+        let markers = ["/Contents/MacOS/", "/Contents/XPCServices/"]
+        guard let markerRange = markers.compactMap({
+            commandPath.range(of: $0, options: .caseInsensitive)
+        }).min(by: { $0.lowerBound < $1.lowerBound }) else {
+            return nil
+        }
+        
+        let searchStart = markerRange.upperBound
+        let delimiterRanges = [
+            commandPath.range(of: " --", range: searchStart..<commandPath.endIndex),
+            commandPath.range(of: " /", range: searchStart..<commandPath.endIndex),
+            commandPath.range(
+                of: #"\s-[A-Za-z0-9_]"#,
+                options: .regularExpression,
+                range: searchStart..<commandPath.endIndex
+            )
+        ].compactMap { $0 }
+        
+        let endIndex = delimiterRanges
+            .map(\.lowerBound)
+            .min() ?? commandPath.endIndex
+        
+        let candidate = String(commandPath[..<endIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard candidate.hasPrefix("/"), isBundleExecutablePath(candidate) else {
+            return nil
+        }
+        return candidate
+    }
+    
+    private static func isBundleExecutablePath(_ path: String) -> Bool {
+        let lowercasedPath = path.lowercased()
+        return lowercasedPath.contains(".app/") ||
+            lowercasedPath.contains(".xpc/") ||
+            lowercasedPath.contains(".appex/") ||
+            lowercasedPath.hasSuffix(".app") ||
+            lowercasedPath.hasSuffix(".xpc") ||
+            lowercasedPath.hasSuffix(".appex")
+    }
+    
+    private static func commandSignature(from source: String) -> String {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return String(trimmed.prefix(256))
+    }
+    
+    private static func cachedExecutablePath(pid: Int32, commandSignature: String) -> String? {
+        executablePathCacheLock.lock()
+        defer { executablePathCacheLock.unlock() }
+        
+        guard let cached = executablePathCache[pid] else { return nil }
+        guard cached.commandSignature == commandSignature else { return nil }
+        return cached.executablePath
+    }
+    
+    private static func isExecutablePathKnownMiss(pid: Int32, commandSignature: String) -> Bool {
+        let missKey = ExecutablePathMissKey(pid: pid, commandSignature: commandSignature)
+        
+        executablePathCacheLock.lock()
+        defer { executablePathCacheLock.unlock() }
+        return executablePathMissCache.contains(missKey)
+    }
+    
+    private static func cacheExecutablePath(pid: Int32, commandSignature: String, executablePath: String) {
+        executablePathCacheLock.lock()
+        defer { executablePathCacheLock.unlock() }
+        
+        let hitKey = ExecutablePathCacheKey.hit(pid)
+        executablePathCacheOrder.removeAll { $0 == hitKey }
+        
+        executablePathCache[pid] = ExecutablePathCacheEntry(
+            commandSignature: commandSignature,
+            executablePath: executablePath
+        )
+        
+        let missKey = ExecutablePathMissKey(pid: pid, commandSignature: commandSignature)
+        let cacheMissKey = ExecutablePathCacheKey.miss(missKey)
+        executablePathMissCache.remove(missKey)
+        executablePathCacheOrder.removeAll { $0 == cacheMissKey }
+        
+        executablePathCacheOrder.append(hitKey)
+        trimExecutablePathCachesIfNeeded()
+    }
+    
+    private static func cacheExecutablePathMiss(pid: Int32, commandSignature: String) {
+        executablePathCacheLock.lock()
+        defer { executablePathCacheLock.unlock() }
+        
+        let missKey = ExecutablePathMissKey(pid: pid, commandSignature: commandSignature)
+        let cacheMissKey = ExecutablePathCacheKey.miss(missKey)
+        executablePathCacheOrder.removeAll { $0 == cacheMissKey }
+        
+        executablePathMissCache.insert(missKey)
+        executablePathCacheOrder.append(cacheMissKey)
+        trimExecutablePathCachesIfNeeded()
+    }
+    
+    private static func trimExecutablePathCachesIfNeeded() {
+        while executablePathCache.count + executablePathMissCache.count > executablePathCacheLimit {
+            guard let oldest = executablePathCacheOrder.first else {
+                executablePathCache.removeAll(keepingCapacity: true)
+                executablePathMissCache.removeAll(keepingCapacity: true)
+                return
+            }
+            
+            executablePathCacheOrder.removeFirst()
+            
+            switch oldest {
+            case .hit(let pid):
+                executablePathCache.removeValue(forKey: pid)
+            case .miss(let missKey):
+                executablePathMissCache.remove(missKey)
+            }
+        }
     }
 }
