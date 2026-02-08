@@ -65,6 +65,45 @@ final class ProcessDescriptionsTests: XCTestCase {
             "Tool App (com.example.Tool)"
         )
     }
+
+    func testDescriptionLookupReusesBundleCacheAcrossExecutablesInSameBundle() throws {
+        let uniqueBundleName = "SharedTool-\(UUID().uuidString).app"
+        let firstExecutablePath = try createFakeBundle(
+            bundleFolderName: uniqueBundleName,
+            executableName: "ToolA",
+            bundleName: "Shared Tool",
+            bundleIdentifier: "com.example.SharedTool"
+        )
+        let expectedDescription = "Shared Tool (com.example.SharedTool)"
+
+        XCTAssertEqual(
+            ProcessDescriptions.getDescription(
+                for: "unknown-process",
+                executablePath: firstExecutablePath
+            ),
+            expectedDescription
+        )
+
+        let firstExecutableURL = URL(fileURLWithPath: firstExecutablePath)
+        let macOSDirectoryURL = firstExecutableURL.deletingLastPathComponent()
+        let contentsDirectoryURL = macOSDirectoryURL.deletingLastPathComponent()
+        let secondExecutableURL = macOSDirectoryURL.appendingPathComponent("ToolB")
+        FileManager.default.createFile(
+            atPath: secondExecutableURL.path,
+            contents: Data("echo test".utf8)
+        )
+
+        let infoPlistURL = contentsDirectoryURL.appendingPathComponent("Info.plist")
+        try FileManager.default.removeItem(at: infoPlistURL)
+
+        XCTAssertEqual(
+            ProcessDescriptions.getDescription(
+                for: "unknown-process",
+                executablePath: secondExecutableURL.path
+            ),
+            expectedDescription
+        )
+    }
     
     private func createFakeBundle(
         bundleFolderName: String,

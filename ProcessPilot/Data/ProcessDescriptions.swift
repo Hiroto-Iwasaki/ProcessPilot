@@ -266,23 +266,24 @@ struct ProcessDescriptions {
     
     private static func getBundleDescription(from executablePath: String?) -> String? {
         guard let executablePath else { return nil }
+        guard let bundleURL = resolveBundleURL(from: executablePath) else { return nil }
+        let bundleCacheKey = bundleURL.standardizedFileURL.path
         
         cacheLock.lock()
-        if let cached = bundleDescriptionCache[executablePath] {
+        if let cached = bundleDescriptionCache[bundleCacheKey] {
             cacheLock.unlock()
             return cached
         }
-        if bundleDescriptionMissCache.contains(executablePath) {
+        if bundleDescriptionMissCache.contains(bundleCacheKey) {
             cacheLock.unlock()
             return nil
         }
         cacheLock.unlock()
         
-        guard let bundleURL = resolveBundleURL(from: executablePath),
-              let bundleDescription = loadBundleDescription(from: bundleURL) else {
+        guard let bundleDescription = loadBundleDescription(from: bundleURL) else {
             cacheLock.lock()
-            if bundleDescriptionMissCache.insert(executablePath).inserted {
-                bundleDescriptionMissCacheOrder.append(executablePath)
+            if bundleDescriptionMissCache.insert(bundleCacheKey).inserted {
+                bundleDescriptionMissCacheOrder.append(bundleCacheKey)
             }
             trimBundleDescriptionMissCacheIfNeededLocked()
             cacheLock.unlock()
@@ -290,11 +291,11 @@ struct ProcessDescriptions {
         }
         
         cacheLock.lock()
-        if bundleDescriptionCache[executablePath] == nil {
-            bundleDescriptionCacheOrder.append(executablePath)
+        if bundleDescriptionCache[bundleCacheKey] == nil {
+            bundleDescriptionCacheOrder.append(bundleCacheKey)
         }
-        bundleDescriptionCache[executablePath] = bundleDescription
-        bundleDescriptionMissCache.remove(executablePath)
+        bundleDescriptionCache[bundleCacheKey] = bundleDescription
+        bundleDescriptionMissCache.remove(bundleCacheKey)
         trimBundleDescriptionCacheIfNeededLocked()
         cacheLock.unlock()
         return bundleDescription

@@ -16,9 +16,10 @@ struct AppProcessInfo: Identifiable, Hashable, Sendable {
     var cpuUsage: Double
     var memoryUsage: Double // in MB
     var description: String
-    var isSystemProcess: Bool
-    var parentApp: String?
-    var executablePath: String? = nil
+    let isSystemProcess: Bool
+    let parentApp: String?
+    let executablePath: String?
+    let source: Source
     
     var displayName: String {
         if let parent = parentApp, !parent.isEmpty {
@@ -27,37 +28,36 @@ struct AppProcessInfo: Identifiable, Hashable, Sendable {
         return name
     }
     
-    var source: Source {
-        if isSystemProcess {
-            return .system
-        }
-        
-        if let parentApp, Self.currentAppAliases.contains(parentApp.lowercased()) {
-            return .currentApp
-        }
-        
-        guard let executablePath else {
-            return .unknown
-        }
-        
-        if Self.systemPathPrefixes.contains(where: { executablePath.hasPrefix($0) }) {
-            return .system
-        }
-        
-        if executablePath.contains(".app/") {
-            if Self.currentAppAliases.contains(where: { alias in
-                executablePath.localizedCaseInsensitiveContains("/\(alias).app/")
-            }) {
-                return .currentApp
-            }
-            return .application
-        }
-        
-        if Self.commandLinePathPrefixes.contains(where: { executablePath.hasPrefix($0) }) {
-            return .commandLine
-        }
-        
-        return .unknown
+    init(
+        pid: Int32,
+        name: String,
+        user: String,
+        cpuUsage: Double,
+        memoryUsage: Double,
+        description: String,
+        isSystemProcess: Bool,
+        parentApp: String?,
+        executablePath: String? = nil,
+        source: Source? = nil
+    ) {
+        self.pid = pid
+        self.name = name
+        self.user = user
+        self.cpuUsage = cpuUsage
+        self.memoryUsage = memoryUsage
+        self.description = description
+        self.isSystemProcess = isSystemProcess
+        self.parentApp = parentApp
+        let normalizedExecutablePath = executablePath?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.executablePath = (normalizedExecutablePath?.isEmpty == false)
+            ? normalizedExecutablePath
+            : nil
+        self.source = source ?? Self.resolveSource(
+            isSystemProcess: isSystemProcess,
+            parentApp: parentApp,
+            executablePath: self.executablePath
+        )
     }
     
     static func == (lhs: AppProcessInfo, rhs: AppProcessInfo) -> Bool {
@@ -66,6 +66,43 @@ struct AppProcessInfo: Identifiable, Hashable, Sendable {
     
     func hash(into hasher: inout Hasher) {
         hasher.combine(pid)
+    }
+
+    private static func resolveSource(
+        isSystemProcess: Bool,
+        parentApp: String?,
+        executablePath: String?
+    ) -> Source {
+        if isSystemProcess {
+            return .system
+        }
+
+        if let parentApp, currentAppAliases.contains(parentApp.lowercased()) {
+            return .currentApp
+        }
+
+        guard let executablePath else {
+            return .unknown
+        }
+
+        if systemPathPrefixes.contains(where: { executablePath.hasPrefix($0) }) {
+            return .system
+        }
+
+        if executablePath.contains(".app/") {
+            if currentAppAliases.contains(where: { alias in
+                executablePath.localizedCaseInsensitiveContains("/\(alias).app/")
+            }) {
+                return .currentApp
+            }
+            return .application
+        }
+
+        if commandLinePathPrefixes.contains(where: { executablePath.hasPrefix($0) }) {
+            return .commandLine
+        }
+
+        return .unknown
     }
     
     private static let systemPathPrefixes = [
