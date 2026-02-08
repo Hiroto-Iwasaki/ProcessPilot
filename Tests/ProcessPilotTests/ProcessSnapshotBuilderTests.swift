@@ -356,6 +356,66 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(resumedCPU, 30, accuracy: 0.001)
     }
     
+    func testBottomBarHistoryCalculatesCPUDeltas() {
+        var history = BottomBarHistory(historyLimit: 8)
+        
+        let first = history.nextMetrics(
+            from: makeBottomBarSnapshot(
+                cpuUser: 100,
+                cpuSystem: 50,
+                cpuIdle: 850,
+                pressureRatio: 0.40
+            )
+        )
+        
+        XCTAssertEqual(first.cpu.userPercent, 10, accuracy: 0.001)
+        XCTAssertEqual(first.cpu.systemPercent, 5, accuracy: 0.001)
+        XCTAssertEqual(first.cpu.idlePercent, 85, accuracy: 0.001)
+        
+        let second = history.nextMetrics(
+            from: makeBottomBarSnapshot(
+                cpuUser: 130,
+                cpuSystem: 70,
+                cpuIdle: 900,
+                pressureRatio: 0.55
+            )
+        )
+        
+        XCTAssertEqual(second.cpu.userPercent, 30, accuracy: 0.001)
+        XCTAssertEqual(second.cpu.systemPercent, 20, accuracy: 0.001)
+        XCTAssertEqual(second.cpu.idlePercent, 50, accuracy: 0.001)
+        XCTAssertEqual(second.cpu.userHistory.count, 2)
+        XCTAssertEqual(second.cpu.systemHistory.count, 2)
+    }
+    
+    func testBottomBarHistoryCapsHistoryLength() {
+        var history = BottomBarHistory(historyLimit: 3)
+        
+        for index in 0..<5 {
+            _ = history.nextMetrics(
+                from: makeBottomBarSnapshot(
+                    cpuUser: UInt64(100 + index * 10),
+                    cpuSystem: UInt64(100 + index * 5),
+                    cpuIdle: UInt64(1_000 + index * 20),
+                    pressureRatio: Double(index) * 0.2
+                )
+            )
+        }
+        
+        let latest = history.nextMetrics(
+            from: makeBottomBarSnapshot(
+                cpuUser: 200,
+                cpuSystem: 140,
+                cpuIdle: 1_200,
+                pressureRatio: 0.6
+            )
+        )
+        
+        XCTAssertEqual(latest.cpu.userHistory.count, 3)
+        XCTAssertEqual(latest.cpu.systemHistory.count, 3)
+        XCTAssertEqual(latest.memory.pressureHistory.count, 3)
+    }
+    
     private func makeProcess(
         pid: Int32,
         name: String,
@@ -389,6 +449,32 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
                     parentApp: nil
                 )
             ]
+        )
+    }
+    
+    private func makeBottomBarSnapshot(
+        cpuUser: UInt64,
+        cpuSystem: UInt64,
+        cpuIdle: UInt64,
+        pressureRatio: Double
+    ) -> BottomBarRawSnapshot {
+        BottomBarRawSnapshot(
+            cpuTicks: SystemMetricsCollector.CPUTicks(
+                user: cpuUser,
+                system: cpuSystem,
+                idle: cpuIdle,
+                nice: 0
+            ),
+            memory: SystemMetricsCollector.MemorySnapshot(
+                pressureRatio: pressureRatio,
+                physicalMemoryMB: 16 * 1024,
+                usedMemoryMB: 8 * 1024,
+                cachedFilesMB: 2 * 1024,
+                swapUsedMB: 512,
+                appMemoryMB: 4 * 1024,
+                wiredMemoryMB: 2 * 1024,
+                compressedMemoryMB: 1024
+            )
         )
     }
 }

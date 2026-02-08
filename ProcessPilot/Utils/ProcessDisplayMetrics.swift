@@ -19,15 +19,27 @@ enum ProcessDisplayMetrics {
         return .green
     }
     
-    static func memoryText(for usageMB: Double) -> String {
-        "\(memoryValue(for: usageMB)) \(memoryUnit(for: usageMB))"
+    static func memoryText(
+        for usageMB: Double,
+        gbPrecision: Int = 1,
+        mbPrecision: Int = 0
+    ) -> String {
+        "\(memoryValue(for: usageMB, gbPrecision: gbPrecision, mbPrecision: mbPrecision)) \(memoryUnit(for: usageMB))"
     }
     
-    static func memoryValue(for usageMB: Double) -> String {
+    static func memoryValue(
+        for usageMB: Double,
+        gbPrecision: Int = 1,
+        mbPrecision: Int = 0
+    ) -> String {
+        let resolvedGBPrecision = max(0, gbPrecision)
+        let resolvedMBPrecision = max(0, mbPrecision)
+        
         if usageMB >= memoryDisplaySwitchMB {
-            return String(format: "%.1f", usageMB / 1024)
+            return String(format: "%.\(resolvedGBPrecision)f", usageMB / 1024)
         }
-        return String(format: "%.0f", usageMB)
+        
+        return String(format: "%.\(resolvedMBPrecision)f", usageMB)
     }
     
     static func memoryUnit(for usageMB: Double) -> String {

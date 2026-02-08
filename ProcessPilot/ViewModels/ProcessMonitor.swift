@@ -15,6 +15,7 @@ class ProcessMonitor: ObservableObject {
     @Published var sortBy: SortOption = .cpu
     @Published var showGrouped = true
     @Published var showHighUsageFirst = true
+    @Published private(set) var bottomBarMetrics = BottomBarMetrics.empty
     @Published var filterText = "" {
         didSet {
             applySortingAndGrouping()
@@ -25,6 +26,7 @@ class ProcessMonitor: ObservableObject {
     private var usageSmoother = UsageSmoother(windowSize: 3)
     private var systemGroupCPUSmoother = SystemGroupCPUSmoother(windowSize: 3)
     private var cpuUsageState = CPUUsageDeltaState()
+    private var bottomBarHistory = BottomBarHistory(historyLimit: 48)
     private var snapshotTask: Task<Void, Never>?
     private var snapshotVersion: UInt64 = 0
     private var hasPrimedInitialSamples = false
@@ -46,7 +48,11 @@ class ProcessMonitor: ObservableObject {
                 hasPrimedInitialSamples = true
             }
             
-            allProcesses = try await fetchAndProcessProcesses()
+            async let processedProcesses = fetchAndProcessProcesses()
+            async let systemSnapshot = fetchBottomBarSnapshot()
+            
+            allProcesses = try await processedProcesses
+            bottomBarMetrics = bottomBarHistory.nextMetrics(from: await systemSnapshot)
             applySortingAndGrouping()
         } catch is CancellationError {
             return
@@ -144,6 +150,12 @@ class ProcessMonitor: ObservableObject {
         return usageSmoother.smooth(processes: cpuAdjusted.processes)
     }
     
+    private func fetchBottomBarSnapshot() async -> BottomBarRawSnapshot {
+        await Task.detached(priority: .utility) {
+            SystemMetricsCollector.capture()
+        }.value
+    }
+    
     private func primeInitialSamples() async throws {
         let warmupPasses = max(usageSmoother.windowSize, 1)
         
@@ -154,6 +166,294 @@ class ProcessMonitor: ObservableObject {
                 try await Task.sleep(nanoseconds: initialWarmupIntervalNanoseconds)
             }
         }
+    }
+}
+
+struct BottomBarMetrics: Sendable {
+    struct CPUSection: Sendable {
+        var systemPercent: Double
+        var userPercent: Double
+        var idlePercent: Double
+        var systemHistory: [Double]
+        var userHistory: [Double]
+    }
+    
+    struct MemorySection: Sendable {
+        var pressurePercent: Double
+        var pressureHistory: [Double]
+        var physicalMemoryMB: Double
+        var usedMemoryMB: Double
+        var cachedFilesMB: Double
+        var swapUsedMB: Double
+        var appMemoryMB: Double
+        var wiredMemoryMB: Double
+        var compressedMemoryMB: Double
+    }
+    
+    var cpu: CPUSection
+    var memory: MemorySection
+    
+    static let empty = BottomBarMetrics(
+        cpu: CPUSection(
+            systemPercent: 0,
+            userPercent: 0,
+            idlePercent: 100,
+            systemHistory: [0],
+            userHistory: [0]
+        ),
+        memory: MemorySection(
+            pressurePercent: 0,
+            pressureHistory: [0],
+            physicalMemoryMB: 0,
+            usedMemoryMB: 0,
+            cachedFilesMB: 0,
+            swapUsedMB: 0,
+            appMemoryMB: 0,
+            wiredMemoryMB: 0,
+            compressedMemoryMB: 0
+        )
+    )
+}
+
+struct BottomBarRawSnapshot: Sendable {
+    let cpuTicks: SystemMetricsCollector.CPUTicks
+    let memory: SystemMetricsCollector.MemorySnapshot
+}
+
+struct BottomBarHistory {
+    let historyLimit: Int
+    private var previousCPUTicks: SystemMetricsCollector.CPUTicks?
+    private var systemHistory: [Double] = []
+    private var userHistory: [Double] = []
+    private var pressureHistory: [Double] = []
+    
+    init(historyLimit: Int) {
+        self.historyLimit = max(1, historyLimit)
+    }
+    
+    mutating func nextMetrics(from snapshot: BottomBarRawSnapshot) -> BottomBarMetrics {
+        let cpu = cpuPercentages(for: snapshot.cpuTicks)
+        let memoryPressure = clamp(snapshot.memory.pressureRatio, min: 0, max: 1)
+        
+        BottomBarHistory.append(cpu.system, to: &systemHistory, limit: historyLimit)
+        BottomBarHistory.append(cpu.user, to: &userHistory, limit: historyLimit)
+        BottomBarHistory.append(memoryPressure, to: &pressureHistory, limit: historyLimit)
+        
+        return BottomBarMetrics(
+            cpu: .init(
+                systemPercent: cpu.system,
+                userPercent: cpu.user,
+                idlePercent: cpu.idle,
+                systemHistory: systemHistory,
+                userHistory: userHistory
+            ),
+            memory: .init(
+                pressurePercent: memoryPressure * 100,
+                pressureHistory: pressureHistory,
+                physicalMemoryMB: snapshot.memory.physicalMemoryMB,
+                usedMemoryMB: snapshot.memory.usedMemoryMB,
+                cachedFilesMB: snapshot.memory.cachedFilesMB,
+                swapUsedMB: snapshot.memory.swapUsedMB,
+                appMemoryMB: snapshot.memory.appMemoryMB,
+                wiredMemoryMB: snapshot.memory.wiredMemoryMB,
+                compressedMemoryMB: snapshot.memory.compressedMemoryMB
+            )
+        )
+    }
+    
+    private mutating func cpuPercentages(for currentTicks: SystemMetricsCollector.CPUTicks) -> (system: Double, user: Double, idle: Double) {
+        defer {
+            previousCPUTicks = currentTicks
+        }
+        
+        if let previousCPUTicks,
+           let delta = currentTicks.delta(from: previousCPUTicks),
+           delta.total > 0 {
+            let total = Double(delta.total)
+            let userPercent = (Double(delta.user + delta.nice) / total) * 100
+            let systemPercent = (Double(delta.system) / total) * 100
+            let idlePercent = (Double(delta.idle) / total) * 100
+            return (
+                clamp(systemPercent, min: 0, max: 100),
+                clamp(userPercent, min: 0, max: 100),
+                clamp(idlePercent, min: 0, max: 100)
+            )
+        }
+        
+        let total = Double(currentTicks.total)
+        guard total > 0 else {
+            return (0, 0, 100)
+        }
+        
+        let userPercent = (Double(currentTicks.user + currentTicks.nice) / total) * 100
+        let systemPercent = (Double(currentTicks.system) / total) * 100
+        let idlePercent = (Double(currentTicks.idle) / total) * 100
+        return (
+            clamp(systemPercent, min: 0, max: 100),
+            clamp(userPercent, min: 0, max: 100),
+            clamp(idlePercent, min: 0, max: 100)
+        )
+    }
+    
+    private static func append(_ value: Double, to history: inout [Double], limit: Int) {
+        history.append(value)
+        if history.count > limit {
+            history.removeFirst(history.count - limit)
+        }
+    }
+    
+    private func clamp(_ value: Double, min lowerBound: Double, max upperBound: Double) -> Double {
+        guard value.isFinite else { return lowerBound }
+        if value < lowerBound { return lowerBound }
+        if value > upperBound { return upperBound }
+        return value
+    }
+}
+
+enum SystemMetricsCollector {
+    struct CPUTicks: Sendable {
+        let user: UInt64
+        let system: UInt64
+        let idle: UInt64
+        let nice: UInt64
+        
+        var total: UInt64 {
+            user &+ system &+ idle &+ nice
+        }
+        
+        func delta(from previous: CPUTicks) -> CPUTicks? {
+            guard user >= previous.user,
+                  system >= previous.system,
+                  idle >= previous.idle,
+                  nice >= previous.nice else {
+                return nil
+            }
+            
+            return CPUTicks(
+                user: user - previous.user,
+                system: system - previous.system,
+                idle: idle - previous.idle,
+                nice: nice - previous.nice
+            )
+        }
+        
+        static let zero = CPUTicks(user: 0, system: 0, idle: 0, nice: 0)
+    }
+    
+    struct MemorySnapshot: Sendable {
+        let pressureRatio: Double
+        let physicalMemoryMB: Double
+        let usedMemoryMB: Double
+        let cachedFilesMB: Double
+        let swapUsedMB: Double
+        let appMemoryMB: Double
+        let wiredMemoryMB: Double
+        let compressedMemoryMB: Double
+    }
+    
+    private static let bytesPerMB = 1024.0 * 1024.0
+    static func capture() -> BottomBarRawSnapshot {
+        BottomBarRawSnapshot(
+            cpuTicks: readCPUTicks(),
+            memory: readMemorySnapshot()
+        )
+    }
+    
+    private static func readCPUTicks() -> CPUTicks {
+        var cpuInfo = host_cpu_load_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<host_cpu_load_info_data_t>.stride / MemoryLayout<integer_t>.stride
+        )
+        
+        let result: kern_return_t = withUnsafeMutablePointer(to: &cpuInfo) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPointer in
+                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, intPointer, &count)
+            }
+        }
+        
+        guard result == KERN_SUCCESS else {
+            return .zero
+        }
+        
+        return CPUTicks(
+            user: UInt64(cpuInfo.cpu_ticks.0),
+            system: UInt64(cpuInfo.cpu_ticks.1),
+            idle: UInt64(cpuInfo.cpu_ticks.2),
+            nice: UInt64(cpuInfo.cpu_ticks.3)
+        )
+    }
+    
+    private static func readMemorySnapshot() -> MemorySnapshot {
+        let physicalMemoryMB = Double(Foundation.ProcessInfo.processInfo.physicalMemory) / bytesPerMB
+        
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+        let pageBytes = Double(max(pageSize, 1))
+        let pageToMB = pageBytes / bytesPerMB
+        
+        var vmStats = vm_statistics64()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<vm_statistics64_data_t>.stride / MemoryLayout<integer_t>.stride
+        )
+        
+        let result: kern_return_t = withUnsafeMutablePointer(to: &vmStats) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPointer in
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, intPointer, &count)
+            }
+        }
+        
+        guard result == KERN_SUCCESS else {
+            return MemorySnapshot(
+                pressureRatio: 0,
+                physicalMemoryMB: physicalMemoryMB,
+                usedMemoryMB: 0,
+                cachedFilesMB: 0,
+                swapUsedMB: readSwapUsedMB(),
+                appMemoryMB: 0,
+                wiredMemoryMB: 0,
+                compressedMemoryMB: 0
+            )
+        }
+        
+        let appMemoryMB = sanitize(Double(vmStats.internal_page_count) * pageToMB)
+        let wiredMemoryMB = sanitize(Double(vmStats.wire_count) * pageToMB)
+        let compressedMemoryMB = sanitize(Double(vmStats.compressor_page_count) * pageToMB)
+        let cachedFilesMB = sanitize(Double(vmStats.external_page_count + vmStats.purgeable_count) * pageToMB)
+        let usedMemoryMB = sanitize(appMemoryMB + wiredMemoryMB + compressedMemoryMB)
+        let pressureRatio = physicalMemoryMB > 0
+            ? min(max(usedMemoryMB / physicalMemoryMB, 0), 1)
+            : 0
+        
+        return MemorySnapshot(
+            pressureRatio: pressureRatio,
+            physicalMemoryMB: physicalMemoryMB,
+            usedMemoryMB: usedMemoryMB,
+            cachedFilesMB: cachedFilesMB,
+            swapUsedMB: readSwapUsedMB(),
+            appMemoryMB: appMemoryMB,
+            wiredMemoryMB: wiredMemoryMB,
+            compressedMemoryMB: compressedMemoryMB
+        )
+    }
+    
+    private static func readSwapUsedMB() -> Double {
+        var swapUsage = xsw_usage()
+        var size = MemoryLayout<xsw_usage>.stride
+        
+        let result = withUnsafeMutablePointer(to: &swapUsage) { pointer in
+            sysctlbyname("vm.swapusage", pointer, &size, nil, 0)
+        }
+        
+        guard result == 0 else {
+            return 0
+        }
+        
+        return sanitize(Double(swapUsage.xsu_used) / bytesPerMB)
+    }
+    
+    private static func sanitize(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return max(0, value)
     }
 }
 

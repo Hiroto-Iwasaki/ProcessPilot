@@ -23,11 +23,18 @@ struct ContentView: View {
                 .frame(minWidth: 200)
         } content: {
             // メインコンテンツ
-            ProcessListView(
-                monitor: monitor,
-                selection: $selection
-            )
-            .frame(minWidth: 400)
+            VStack(spacing: 0) {
+                ProcessListView(
+                    monitor: monitor,
+                    selection: $selection
+                )
+                .frame(minWidth: 400, maxHeight: .infinity)
+                
+                MainContentBottomBarView(
+                    sortBy: monitor.sortBy,
+                    metrics: monitor.bottomBarMetrics
+                )
+            }
         } detail: {
             // 詳細パネル
             if let group = selectedGroup {

@@ -133,11 +133,34 @@ struct ProcessManager {
         if result == 0 {
             return .success
         } else if errno == EPERM {
-            return .permissionDenied
+            switch PrivilegedHelperClient.shared.sendSignal(pid: pid, signal: signal) {
+            case .success(let helperErrno):
+                return mapErrnoToResult(
+                    helperErrno,
+                    failureMessage: failureMessage
+                )
+            case .failure(let error):
+                return .failed(error.localizedDescription)
+            }
         } else if errno == ESRCH {
             return .processNotFound
         } else {
             return .failed("\(failureMessage) (errno: \(errno))")
+        }
+    }
+    
+    private static func mapErrnoToResult(
+        _ errnoCode: Int32,
+        failureMessage: String
+    ) -> TerminationResult {
+        if errnoCode == 0 {
+            return .success
+        } else if errnoCode == EPERM {
+            return .permissionDenied
+        } else if errnoCode == ESRCH {
+            return .processNotFound
+        } else {
+            return .failed("\(failureMessage) (errno: \(errnoCode))")
         }
     }
 }
