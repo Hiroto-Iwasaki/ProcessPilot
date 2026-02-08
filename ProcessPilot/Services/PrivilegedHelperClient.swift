@@ -35,8 +35,8 @@ final class PrivilegedHelperClient {
     
     private init() {}
     
-    func sendSignal(pid: Int32, signal: Int32) -> Result<Int32, PrivilegedHelperError> {
-        let firstAttempt = callHelper(pid: pid, signal: signal)
+    func sendSignal(pid: Int32, signal: Int32) async -> Result<Int32, PrivilegedHelperError> {
+        let firstAttempt = await callHelper(pid: pid, signal: signal)
         switch firstAttempt {
         case .success:
             return firstAttempt
@@ -50,72 +50,59 @@ final class PrivilegedHelperClient {
         case .failure(let error):
             return .failure(error)
         case .success:
-            return callHelper(pid: pid, signal: signal)
+            return await callHelper(pid: pid, signal: signal)
         }
     }
     
-    private func callHelper(pid: Int32, signal: Int32) -> Result<Int32, PrivilegedHelperError> {
-        let stateLock = NSLock()
-        var responseErrno: Int32?
-        var responseError: PrivilegedHelperError?
-        let semaphore = DispatchSemaphore(value: 0)
-        
-        let connection = NSXPCConnection(
-            machServiceName: helperMachServiceName,
-            options: .privileged
-        )
-        connection.remoteObjectInterface = NSXPCInterface(with: ProcessPilotPrivilegedHelperXPC.self)
-        connection.interruptionHandler = {
-            stateLock.lock()
-            if responseErrno == nil && responseError == nil {
-                responseError = .xpcCallFailed("接続が中断されました。")
-                semaphore.signal()
+    private func callHelper(pid: Int32, signal: Int32) async -> Result<Int32, PrivilegedHelperError> {
+        await withCheckedContinuation { continuation in
+            let stateLock = NSLock()
+            var didFinish = false
+            
+            let connection = NSXPCConnection(
+                machServiceName: helperMachServiceName,
+                options: .privileged
+            )
+            connection.remoteObjectInterface = NSXPCInterface(with: ProcessPilotPrivilegedHelperXPC.self)
+            
+            func finish(_ result: Result<Int32, PrivilegedHelperError>) {
+                stateLock.lock()
+                if didFinish {
+                    stateLock.unlock()
+                    return
+                }
+                didFinish = true
+                stateLock.unlock()
+                
+                connection.interruptionHandler = nil
+                connection.invalidationHandler = nil
+                connection.invalidate()
+                continuation.resume(returning: result)
             }
-            stateLock.unlock()
-        }
-        connection.invalidationHandler = {
-            stateLock.lock()
-            if responseErrno == nil && responseError == nil {
-                responseError = .xpcCallFailed("接続が無効化されました。")
-                semaphore.signal()
+            
+            connection.interruptionHandler = {
+                finish(.failure(.xpcCallFailed("接続が中断されました。")))
             }
-            stateLock.unlock()
+            connection.invalidationHandler = {
+                finish(.failure(.xpcCallFailed("接続が無効化されました。")))
+            }
+            connection.resume()
+            
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
+                finish(.failure(.xpcCallFailed(error.localizedDescription)))
+            }) as? ProcessPilotPrivilegedHelperXPC else {
+                finish(.failure(.xpcProxyUnavailable))
+                return
+            }
+            
+            proxy.sendSignal(pid: pid, signal: signal) { errnoCode in
+                finish(.success(errnoCode))
+            }
+            
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
+                finish(.failure(.timeout))
+            }
         }
-        connection.resume()
-        
-        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ error in
-            stateLock.lock()
-            responseError = .xpcCallFailed(error.localizedDescription)
-            semaphore.signal()
-            stateLock.unlock()
-        }) as? ProcessPilotPrivilegedHelperXPC else {
-            connection.invalidate()
-            return .failure(.xpcProxyUnavailable)
-        }
-        
-        proxy.sendSignal(pid: pid, signal: signal) { errnoCode in
-            stateLock.lock()
-            responseErrno = errnoCode
-            semaphore.signal()
-            stateLock.unlock()
-        }
-        
-        let waitResult = semaphore.wait(timeout: .now() + timeoutSeconds)
-        connection.invalidate()
-        
-        if waitResult == .timedOut {
-            return .failure(.timeout)
-        }
-        
-        if let responseError {
-            return .failure(responseError)
-        }
-        
-        guard let responseErrno else {
-            return .failure(.xpcProxyUnavailable)
-        }
-        
-        return .success(responseErrno)
     }
     
     private func shouldAttemptRegistration(for error: PrivilegedHelperError) -> Bool {

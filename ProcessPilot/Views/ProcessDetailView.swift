@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProcessDetailView: View {
     let process: AppProcessInfo
+    let isTerminating: Bool
     let onTerminate: () -> Void
     let onForceTerminate: () -> Void
     @State private var isExecutablePathExpanded = false
@@ -254,6 +255,16 @@ struct ProcessDetailView: View {
                 Text("このプロセスは終了できません")
                     .foregroundColor(.secondary)
             } else {
+                if isTerminating {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("終了中...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
                 HStack(spacing: 12) {
                     // 終了ボタン
                     Button(action: onTerminate) {
@@ -262,6 +273,7 @@ struct ProcessDetailView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
+                    .disabled(isTerminating)
                     
                     // 強制終了ボタン
                     Button(action: onForceTerminate) {
@@ -270,6 +282,7 @@ struct ProcessDetailView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
+                    .disabled(isTerminating)
                 }
             }
         }
@@ -341,6 +354,7 @@ struct DetailRow: View {
             isSystemProcess: false,
             parentApp: nil
         ),
+        isTerminating: false,
         onTerminate: {},
         onForceTerminate: {}
     )

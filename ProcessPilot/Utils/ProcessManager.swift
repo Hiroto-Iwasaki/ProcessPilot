@@ -11,8 +11,8 @@ struct ProcessManager {
     }
     
     /// 通常終了（SIGTERM）
-    static func terminateProcess(pid: Int32) -> TerminationResult {
-        sendSignal(
+    static func terminateProcess(pid: Int32) async -> TerminationResult {
+        await sendSignal(
             pid: pid,
             signal: SIGTERM,
             failureMessage: "終了に失敗しました"
@@ -20,8 +20,8 @@ struct ProcessManager {
     }
     
     /// 強制終了（SIGKILL）
-    static func forceTerminateProcess(pid: Int32) -> TerminationResult {
-        sendSignal(
+    static func forceTerminateProcess(pid: Int32) async -> TerminationResult {
+        await sendSignal(
             pid: pid,
             signal: SIGKILL,
             failureMessage: "強制終了に失敗しました"
@@ -127,13 +127,13 @@ struct ProcessManager {
         pid: Int32,
         signal: Int32,
         failureMessage: String
-    ) -> TerminationResult {
+    ) async -> TerminationResult {
         let result = kill(pid, signal)
         
         if result == 0 {
             return .success
         } else if errno == EPERM {
-            switch PrivilegedHelperClient.shared.sendSignal(pid: pid, signal: signal) {
+            switch await PrivilegedHelperClient.shared.sendSignal(pid: pid, signal: signal) {
             case .success(let helperErrno):
                 return mapErrnoToResult(
                     helperErrno,

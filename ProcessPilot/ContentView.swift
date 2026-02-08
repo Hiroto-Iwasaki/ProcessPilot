@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var monitor = ProcessMonitor()
     @State private var selection: ProcessSelection?
     @State private var didLoadInitialProcesses = false
+    @State private var isTerminating = false
     
     private var selectedProcess: AppProcessInfo? {
         guard case .process(let selectedPID) = selection else { return nil }
@@ -41,12 +42,14 @@ struct ContentView: View {
                 if let group = selectedGroup {
                     ProcessGroupDetailView(
                         group: group,
+                        isTerminating: isTerminating,
                         onTerminateGroup: { handleTerminate(group: group, force: false) },
                         onForceTerminateGroup: { handleTerminate(group: group, force: true) }
                     )
                 } else if let process = selectedProcess {
                     ProcessDetailView(
                         process: process,
+                        isTerminating: isTerminating,
                         onTerminate: { handleTerminate(process: process, force: false) },
                         onForceTerminate: { handleTerminate(process: process, force: true) }
                     )
@@ -73,6 +76,8 @@ struct ContentView: View {
     }
     
     private func handleTerminate(process: AppProcessInfo, force: Bool) {
+        guard !isTerminating else { return }
+        
         // 終了不可プロセスのチェック
         if ProcessDescriptions.isCriticalProcess(process.name) {
             ProcessManager.showCriticalProcessAlert(processName: process.name)
@@ -83,21 +88,31 @@ struct ContentView: View {
         if process.isSystemProcess {
             ProcessManager.showSystemProcessWarning(processName: process.name) { confirmed in
                 if confirmed {
-                    performTermination(process: process, force: force)
+                    Task { @MainActor in
+                        await performTermination(process: process, force: force)
+                    }
                 }
             }
         } else {
-            performTermination(process: process, force: force)
+            Task { @MainActor in
+                await performTermination(process: process, force: force)
+            }
         }
     }
     
-    private func performTermination(process: AppProcessInfo, force: Bool) {
+    @MainActor
+    private func performTermination(process: AppProcessInfo, force: Bool) async {
+        guard !isTerminating else { return }
+        
+        isTerminating = true
+        defer { isTerminating = false }
+        
         let result: ProcessManager.TerminationResult
         
         if force {
-            result = ProcessManager.forceTerminateProcess(pid: process.pid)
+            result = await ProcessManager.forceTerminateProcess(pid: process.pid)
         } else {
-            result = ProcessManager.terminateProcess(pid: process.pid)
+            result = await ProcessManager.terminateProcess(pid: process.pid)
         }
         
         ProcessManager.showResultAlert(result: result, processName: process.name)
@@ -112,6 +127,8 @@ struct ContentView: View {
     }
     
     private func handleTerminate(group: ProcessGroup, force: Bool) {
+        guard !isTerminating else { return }
+        
         let nonCriticalSystemCount = group.processes.filter {
             $0.isSystemProcess && !ProcessDescriptions.isCriticalProcess($0.name)
         }.count
@@ -122,17 +139,27 @@ struct ContentView: View {
                 systemProcessCount: nonCriticalSystemCount
             ) { confirmed in
                 if confirmed {
-                    executeGroupTermination(group: group, force: force)
+                    Task { @MainActor in
+                        await executeGroupTermination(group: group, force: force)
+                    }
                 }
             }
             return
         }
         
-        executeGroupTermination(group: group, force: force)
+        Task { @MainActor in
+            await executeGroupTermination(group: group, force: force)
+        }
     }
     
-    private func executeGroupTermination(group: ProcessGroup, force: Bool) {
-        let summary = performGroupTermination(group: group, force: force)
+    @MainActor
+    private func executeGroupTermination(group: ProcessGroup, force: Bool) async {
+        guard !isTerminating else { return }
+        
+        isTerminating = true
+        defer { isTerminating = false }
+        
+        let summary = await performGroupTermination(group: group, force: force)
         monitor.removeProcessesFromCache(pids: summary.endedProcessPIDs)
         showGroupTerminationSummary(summary, groupName: group.appName, force: force)
         
@@ -141,7 +168,7 @@ struct ContentView: View {
         }
     }
     
-    private func performGroupTermination(group: ProcessGroup, force: Bool) -> GroupTerminationSummary {
+    private func performGroupTermination(group: ProcessGroup, force: Bool) async -> GroupTerminationSummary {
         var successCount = 0
         var permissionDeniedCount = 0
         var processNotFoundCount = 0
@@ -156,8 +183,8 @@ struct ContentView: View {
             }
             
             let result = force
-                ? ProcessManager.forceTerminateProcess(pid: process.pid)
-                : ProcessManager.terminateProcess(pid: process.pid)
+                ? await ProcessManager.forceTerminateProcess(pid: process.pid)
+                : await ProcessManager.terminateProcess(pid: process.pid)
             
             switch result {
             case .success:

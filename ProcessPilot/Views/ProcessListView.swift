@@ -73,14 +73,11 @@ struct ProcessGroupView: View {
                                 .fill(group.isSystemGroup ? Color.orange.opacity(0.2) : Color.blue.opacity(0.2))
                                 .frame(width: 32, height: 32)
 
-                            if let appIcon = ProcessAppIconProvider.icon(forExecutablePath: group.representativeExecutablePath) {
-                                Image(nsImage: appIcon)
-                                    .resizable()
-                                    .interpolation(.high)
-                                    .scaledToFit()
-                                    .frame(width: 20, height: 20)
-                                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                            } else {
+                            AsyncProcessIconView(
+                                executablePath: group.representativeExecutablePath,
+                                imageSize: CGSize(width: 20, height: 20),
+                                cornerRadius: 4
+                            ) {
                                 Image(systemName: group.isSystemGroup ? "gearshape.fill" : "app.fill")
                                     .foregroundColor(group.isSystemGroup ? .orange : .blue)
                             }

@@ -4,9 +4,16 @@ import Darwin
 
 @MainActor
 class ProcessMonitor: ObservableObject {
-    private struct DisplaySnapshot: Sendable {
+    typealias FetchProcessesOperation = @Sendable () async throws -> [AppProcessInfo]
+    typealias CalculateCPUUsageOperation = @Sendable ([AppProcessInfo], CPUUsageDeltaState, UInt64) async -> CPUUsageDeltaComputation
+    typealias TimestampProvider = @Sendable () -> UInt64
+    typealias SleepOperation = @Sendable (UInt64) async throws -> Void
+
+    private struct ProcessComputationResult: Sendable {
         let processes: [AppProcessInfo]
-        let groups: [ProcessGroup]
+        let cpuUsageState: CPUUsageDeltaState
+        let usageSmoother: UsageSmoother
+        let hasValidDeltaSample: Bool
     }
     
     @Published var processes: [AppProcessInfo] = []
@@ -26,35 +33,88 @@ class ProcessMonitor: ObservableObject {
     private var systemGroupCPUSmoother = SystemGroupCPUSmoother(windowSize: 3)
     private var cpuUsageState = CPUUsageDeltaState()
     private var snapshotTask: Task<Void, Never>?
+    private var initialWarmupTask: Task<Void, Never>?
+    private var currentWarmupTaskID: UInt64?
+    private var nextWarmupTaskID: UInt64 = 0
     private var filterDebounceTask: Task<Void, Never>?
     private var snapshotVersion: UInt64 = 0
-    private var hasPrimedInitialSamples = false
-    private let initialWarmupIntervalNanoseconds: UInt64 = 250_000_000
-    private let filterDebounceIntervalNanoseconds: UInt64 = 200_000_000
+    private var refreshGeneration: UInt64 = 0
+    private var initialWarmupRemainingPasses: Int?
+
+    private let fetchProcessesOperation: FetchProcessesOperation
+    private let calculateCPUUsageOperation: CalculateCPUUsageOperation
+    private let timestampProvider: TimestampProvider
+    private let sleepOperation: SleepOperation
+    private let initialWarmupIntervalNanoseconds: UInt64
+    private let filterDebounceIntervalNanoseconds: UInt64
     
     enum SortOption: String, CaseIterable, Sendable {
         case cpu = "CPU"
         case memory = "メモリ"
     }
+
+    init(
+        fetchProcessesOperation: @escaping FetchProcessesOperation = {
+            try await ProcessMonitor.defaultFetchProcessesOperation()
+        },
+        calculateCPUUsageOperation: @escaping CalculateCPUUsageOperation = { processes, previousState, timestampNanoseconds in
+            await ProcessMonitor.defaultCalculateCPUUsageOperation(
+                processes: processes,
+                previousState: previousState,
+                timestampNanoseconds: timestampNanoseconds
+            )
+        },
+        timestampProvider: @escaping TimestampProvider = {
+            ProcessMonitor.defaultTimestampProvider()
+        },
+        sleepOperation: @escaping SleepOperation = { nanoseconds in
+            try await ProcessMonitor.defaultSleepOperation(nanoseconds: nanoseconds)
+        },
+        usageSmoothingWindowSize: Int = 3,
+        systemGroupSmoothingWindowSize: Int = 3,
+        initialWarmupIntervalNanoseconds: UInt64 = CPUUsageDeltaCalculator.minimumSamplingIntervalNanoseconds,
+        filterDebounceIntervalNanoseconds: UInt64 = 200_000_000
+    ) {
+        self.fetchProcessesOperation = fetchProcessesOperation
+        self.calculateCPUUsageOperation = calculateCPUUsageOperation
+        self.timestampProvider = timestampProvider
+        self.sleepOperation = sleepOperation
+        self.usageSmoother = UsageSmoother(windowSize: usageSmoothingWindowSize)
+        self.systemGroupCPUSmoother = SystemGroupCPUSmoother(windowSize: systemGroupSmoothingWindowSize)
+        self.initialWarmupIntervalNanoseconds = initialWarmupIntervalNanoseconds
+        self.filterDebounceIntervalNanoseconds = filterDebounceIntervalNanoseconds
+    }
     
     deinit {
         snapshotTask?.cancel()
+        initialWarmupTask?.cancel()
         filterDebounceTask?.cancel()
     }
     
     func refreshProcesses() async {
         guard !isLoading else { return }
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        initialWarmupTask?.cancel()
+        initialWarmupTask = nil
+        currentWarmupTaskID = nil
         isLoading = true
         defer { isLoading = false }
         
         do {
-            if !hasPrimedInitialSamples {
-                try await primeInitialSamples()
-                hasPrimedInitialSamples = true
-            }
-            
-            allProcesses = try await fetchAndProcessProcesses()
+            let computation = try await computeProcessedProcesses(
+                baseCPUUsageState: cpuUsageState,
+                baseUsageSmoother: usageSmoother
+            )
+            guard !Task.isCancelled else { return }
+            guard generation == refreshGeneration else { return }
+
+            applyComputation(computation)
+            registerForegroundSampleForInitialWarmup(
+                hasValidDeltaSample: computation.hasValidDeltaSample
+            )
             applySortingAndGrouping()
+            scheduleInitialWarmupIfNeeded(for: generation)
         } catch is CancellationError {
             return
         } catch {
@@ -100,38 +160,37 @@ class ProcessMonitor: ObservableObject {
         
         snapshotTask?.cancel()
         snapshotTask = Task.detached(priority: .userInitiated) { [sourceProcesses, sourceSortBy, sourceFilterText, sourceShowHighUsageFirst] in
-            let visibleProcesses = ProcessSnapshotBuilder.sortProcesses(
-                sourceProcesses,
-                sortBy: sourceSortBy,
-                filterText: sourceFilterText,
-                showHighUsageFirst: sourceShowHighUsageFirst
-            )
-            
-            guard !Task.isCancelled else {
-                return
-            }
-            
-            let groupedProcesses = ProcessSnapshotBuilder.groupProcesses(
-                visibleProcesses,
-                sortBy: sourceSortBy,
-                showHighUsageFirst: sourceShowHighUsageFirst
-            )
-            let snapshot = DisplaySnapshot(processes: visibleProcesses, groups: groupedProcesses)
-            
-            guard !Task.isCancelled else {
-                return
-            }
-            
-            await MainActor.run {
-                guard version == self.snapshotVersion else {
+            do {
+                let snapshot = try ProcessSnapshotBuilder.makeDisplaySnapshot(
+                    sourceProcesses,
+                    sortBy: sourceSortBy,
+                    filterText: sourceFilterText,
+                    showHighUsageFirst: sourceShowHighUsageFirst
+                )
+                
+                guard !Task.isCancelled else {
                     return
                 }
                 
-                let smoothedGroups = self.systemGroupCPUSmoother.smooth(
-                    groups: snapshot.groups
-                )
-                self.processes = snapshot.processes
-                self.groups = smoothedGroups
+                await MainActor.run {
+                    guard version == self.snapshotVersion else {
+                        return
+                    }
+                    
+                    let smoothedGroups = self.systemGroupCPUSmoother.smooth(
+                        groups: snapshot.groups
+                    )
+                    self.processes = snapshot.processes
+                    self.groups = smoothedGroups
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                #if DEBUG
+                assertionFailure("applySortingAndGrouping failed: \(error)")
+                #else
+                print("ProcessMonitor.applySortingAndGrouping failed: \(error)")
+                #endif
             }
         }
     }
@@ -150,38 +209,134 @@ class ProcessMonitor: ObservableObject {
         }
     }
     
-    private func fetchProcesses() async throws -> [AppProcessInfo] {
+    private func computeProcessedProcesses(
+        baseCPUUsageState: CPUUsageDeltaState,
+        baseUsageSmoother: UsageSmoother
+    ) async throws -> ProcessComputationResult {
+        let fetchedProcesses = try await fetchProcessesOperation()
+        try Task.checkCancellation()
+
+        let cpuAdjusted = await calculateCPUUsageOperation(
+            fetchedProcesses,
+            baseCPUUsageState,
+            timestampProvider()
+        )
+        try Task.checkCancellation()
+        
+        var nextUsageSmoother = baseUsageSmoother
+        let smoothedProcesses = nextUsageSmoother.smooth(processes: cpuAdjusted.processes)
+        try Task.checkCancellation()
+        
+        return ProcessComputationResult(
+            processes: smoothedProcesses,
+            cpuUsageState: cpuAdjusted.state,
+            usageSmoother: nextUsageSmoother,
+            hasValidDeltaSample: cpuAdjusted.hasValidElapsedInterval
+        )
+    }
+
+    private func applyComputation(_ computation: ProcessComputationResult) {
+        allProcesses = computation.processes
+        cpuUsageState = computation.cpuUsageState
+        usageSmoother = computation.usageSmoother
+    }
+
+    private func registerForegroundSampleForInitialWarmup(hasValidDeltaSample: Bool) {
+        if initialWarmupRemainingPasses == nil {
+            initialWarmupRemainingPasses = max(usageSmoother.windowSize - 1, 0)
+            return
+        }
+
+        guard hasValidDeltaSample else { return }
+        decrementInitialWarmupRemainingPassesIfNeeded()
+    }
+
+    private func scheduleInitialWarmupIfNeeded(for generation: UInt64) {
+        guard initialWarmupTask == nil else { return }
+        guard (initialWarmupRemainingPasses ?? 0) > 0 else { return }
+        nextWarmupTaskID &+= 1
+        let taskID = nextWarmupTaskID
+        currentWarmupTaskID = taskID
+        
+        initialWarmupTask = Task { [weak self] in
+            await self?.runInitialWarmup(for: generation, taskID: taskID)
+        }
+    }
+
+    private func runInitialWarmup(for generation: UInt64, taskID: UInt64) async {
+        defer {
+            if currentWarmupTaskID == taskID {
+                initialWarmupTask = nil
+                currentWarmupTaskID = nil
+            }
+        }
+
+        while (initialWarmupRemainingPasses ?? 0) > 0 {
+            do {
+                try await sleepOperation(initialWarmupIntervalNanoseconds)
+            } catch {
+                return
+            }
+            
+            guard !Task.isCancelled else { return }
+            guard generation == refreshGeneration else { return }
+            
+            do {
+                let computation = try await computeProcessedProcesses(
+                    baseCPUUsageState: cpuUsageState,
+                    baseUsageSmoother: usageSmoother
+                )
+                guard !Task.isCancelled else { return }
+                guard generation == refreshGeneration else { return }
+
+                applyComputation(computation)
+                if computation.hasValidDeltaSample {
+                    decrementInitialWarmupRemainingPassesIfNeeded()
+                }
+                applySortingAndGrouping()
+            } catch is CancellationError {
+                return
+            } catch {
+                print("Error warming up initial process samples: \(error)")
+                return
+            }
+        }
+    }
+
+    private func decrementInitialWarmupRemainingPassesIfNeeded() {
+        guard let remainingPasses = initialWarmupRemainingPasses,
+              remainingPasses > 0 else {
+            return
+        }
+        initialWarmupRemainingPasses = remainingPasses - 1
+    }
+
+    nonisolated private static func defaultFetchProcessesOperation() async throws -> [AppProcessInfo] {
         try await Task.detached(priority: .utility) {
             try ProcessSnapshotBuilder.fetchProcesses()
         }.value
     }
-    
-    private func fetchAndProcessProcesses() async throws -> [AppProcessInfo] {
-        let fetchedProcesses = try await fetchProcesses()
-        let previousState = cpuUsageState
-        
-        let cpuAdjusted = await Task.detached(priority: .utility) {
+
+    nonisolated private static func defaultCalculateCPUUsageOperation(
+        processes: [AppProcessInfo],
+        previousState: CPUUsageDeltaState,
+        timestampNanoseconds: UInt64
+    ) async -> CPUUsageDeltaComputation {
+        await Task.detached(priority: .utility) {
             CPUUsageDeltaCalculator.calculate(
-                processes: fetchedProcesses,
+                processes: processes,
                 previousState: previousState,
-                timestampNanoseconds: DispatchTime.now().uptimeNanoseconds
+                timestampNanoseconds: timestampNanoseconds
             )
         }.value
-        
-        cpuUsageState = cpuAdjusted.state
-        return usageSmoother.smooth(processes: cpuAdjusted.processes)
     }
-    
-    private func primeInitialSamples() async throws {
-        let warmupPasses = max(usageSmoother.windowSize, 1)
-        
-        for index in 0..<warmupPasses {
-            _ = try await fetchAndProcessProcesses()
-            
-            if index < warmupPasses - 1 {
-                try await Task.sleep(nanoseconds: initialWarmupIntervalNanoseconds)
-            }
-        }
+
+    nonisolated private static func defaultTimestampProvider() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds
+    }
+
+    nonisolated private static func defaultSleepOperation(nanoseconds: UInt64) async throws {
+        try await Task.sleep(nanoseconds: nanoseconds)
     }
 }
 
@@ -564,9 +719,12 @@ struct CPUUsageDeltaState: Sendable {
 struct CPUUsageDeltaComputation: Sendable {
     let processes: [AppProcessInfo]
     let state: CPUUsageDeltaState
+    let hasValidElapsedInterval: Bool
 }
 
 enum CPUUsageDeltaCalculator {
+    static let minimumSamplingIntervalNanoseconds: UInt64 = 500_000_000
+    
     static func calculate(
         processes: [AppProcessInfo],
         previousState: CPUUsageDeltaState,
@@ -581,7 +739,8 @@ enum CPUUsageDeltaCalculator {
             previousState: previousState,
             timestampNanoseconds: timestampNanoseconds,
             timebaseNumer: systemTimebase.numer,
-            timebaseDenom: systemTimebase.denom
+            timebaseDenom: systemTimebase.denom,
+            minimumElapsedNanoseconds: minimumSamplingIntervalNanoseconds
         )
     }
     
@@ -591,13 +750,16 @@ enum CPUUsageDeltaCalculator {
         previousState: CPUUsageDeltaState,
         timestampNanoseconds: UInt64,
         timebaseNumer: UInt32,
-        timebaseDenom: UInt32
+        timebaseDenom: UInt32,
+        minimumElapsedNanoseconds: UInt64 = minimumSamplingIntervalNanoseconds
     ) -> CPUUsageDeltaComputation {
         var adjusted = processes
         let elapsedNanoseconds = elapsedNanoseconds(
             previousTimestamp: previousState.sampleTimestampNanoseconds,
-            currentTimestamp: timestampNanoseconds
+            currentTimestamp: timestampNanoseconds,
+            minimumRequiredNanoseconds: minimumElapsedNanoseconds
         )
+        let hasValidElapsedInterval = elapsedNanoseconds != nil
         
         if let elapsedNanoseconds, elapsedNanoseconds > 0 {
             for index in adjusted.indices {
@@ -638,7 +800,8 @@ enum CPUUsageDeltaCalculator {
             state: CPUUsageDeltaState(
                 cpuTimeTicksByPID: currentCPUTimeTicksByPID,
                 sampleTimestampNanoseconds: timestampNanoseconds
-            )
+            ),
+            hasValidElapsedInterval: hasValidElapsedInterval
         )
     }
     
@@ -685,12 +848,15 @@ enum CPUUsageDeltaCalculator {
     
     private static func elapsedNanoseconds(
         previousTimestamp: UInt64?,
-        currentTimestamp: UInt64
+        currentTimestamp: UInt64,
+        minimumRequiredNanoseconds: UInt64
     ) -> UInt64? {
         guard let previousTimestamp, currentTimestamp > previousTimestamp else {
             return nil
         }
-        return currentTimestamp - previousTimestamp
+        let elapsed = currentTimestamp - previousTimestamp
+        guard elapsed >= minimumRequiredNanoseconds else { return nil }
+        return elapsed
     }
 }
 
@@ -803,52 +969,82 @@ enum ProcessSnapshotBuilder {
         return parseProcesses(output)
     }
     
+    static func makeDisplaySnapshot(
+        _ processes: [AppProcessInfo],
+        sortBy: ProcessMonitor.SortOption,
+        filterText: String,
+        showHighUsageFirst: Bool = false
+    ) throws -> (processes: [AppProcessInfo], groups: [ProcessGroup]) {
+        let visibleProcesses = try sortProcessesCancellable(
+            processes,
+            sortBy: sortBy,
+            filterText: filterText,
+            showHighUsageFirst: showHighUsageFirst
+        )
+        let groups = try groupProcessesCancellable(
+            visibleProcesses,
+            sortBy: sortBy,
+            showHighUsageFirst: showHighUsageFirst
+        )
+        return (visibleProcesses, groups)
+    }
+    
     static func sortProcesses(
         _ processes: [AppProcessInfo],
         sortBy: ProcessMonitor.SortOption,
         filterText: String,
         showHighUsageFirst: Bool = false
     ) -> [AppProcessInfo] {
-        let normalizedFilterText = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = normalizedFilterText.isEmpty
-            ? processes
-            : processes.filter {
-                $0.name.localizedCaseInsensitiveContains(normalizedFilterText) ||
-                $0.description.localizedCaseInsensitiveContains(normalizedFilterText)
-            }
-        var sorted = filtered
-        let descending = showHighUsageFirst
+        do {
+            return try sortProcessesCancellable(
+                processes,
+                sortBy: sortBy,
+                filterText: filterText,
+                showHighUsageFirst: showHighUsageFirst
+            )
+        } catch {
+            return []
+        }
+    }
+    
+    static func sortProcessesCancellable(
+        _ processes: [AppProcessInfo],
+        sortBy: ProcessMonitor.SortOption,
+        filterText: String,
+        showHighUsageFirst: Bool = false
+    ) throws -> [AppProcessInfo] {
+        var checkCounter = 0
+        try checkCancellation(counter: &checkCounter)
         
-        switch sortBy {
-        case .cpu:
-            orderCollection(
-                &sorted,
-                value: { $0.cpuUsage },
-                descending: descending,
-                tieBreaker: { lhs, rhs in
-                    let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
-                    if nameOrder != .orderedSame {
-                        return nameOrder == .orderedAscending
-                    }
-                    return lhs.pid < rhs.pid
+        let normalizedFilterText = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered: [AppProcessInfo]
+        
+        if normalizedFilterText.isEmpty {
+            filtered = processes
+        } else {
+            var matched: [AppProcessInfo] = []
+            matched.reserveCapacity(processes.count)
+            
+            for process in processes {
+                try checkCancellation(counter: &checkCounter)
+                if process.name.localizedCaseInsensitiveContains(normalizedFilterText) ||
+                    process.description.localizedCaseInsensitiveContains(normalizedFilterText) {
+                    matched.append(process)
                 }
-            )
-        case .memory:
-            orderCollection(
-                &sorted,
-                value: { $0.memoryUsage },
-                descending: descending,
-                tieBreaker: { lhs, rhs in
-                    let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
-                    if nameOrder != .orderedSame {
-                        return nameOrder == .orderedAscending
-                    }
-                    return lhs.pid < rhs.pid
-                }
-            )
+            }
+            filtered = matched
         }
         
-        return sorted
+        let comparator = processComparator(
+            sortBy: sortBy,
+            showHighUsageFirst: showHighUsageFirst
+        )
+        
+        return try stableMergeSort(
+            filtered,
+            by: comparator,
+            checkCounter: &checkCounter
+        )
     }
     
     static func groupProcesses(
@@ -856,58 +1052,209 @@ enum ProcessSnapshotBuilder {
         sortBy: ProcessMonitor.SortOption,
         showHighUsageFirst: Bool = false
     ) -> [ProcessGroup] {
-        var groupDict: [String: [AppProcessInfo]] = [:]
-        let descending = showHighUsageFirst
-        
-        for process in processes {
-            let groupName = process.parentApp ?? (process.isSystemProcess ? "システム" : process.name)
-            if groupDict[groupName] == nil {
-                groupDict[groupName] = []
-            }
-            groupDict[groupName]?.append(process)
-        }
-        
-        var groups = groupDict.map { ProcessGroup(appName: $0.key, processes: $0.value) }
-        
-        switch sortBy {
-        case .cpu:
-            orderCollection(
-                &groups,
-                value: { $0.totalCPU },
-                descending: descending,
-                tieBreaker: { lhs, rhs in
-                    lhs.appName.localizedCaseInsensitiveCompare(rhs.appName) == .orderedAscending
-                }
+        do {
+            return try groupProcessesCancellable(
+                processes,
+                sortBy: sortBy,
+                showHighUsageFirst: showHighUsageFirst
             )
-        case .memory:
-            orderCollection(
-                &groups,
-                value: { $0.totalMemory },
-                descending: descending,
-                tieBreaker: { lhs, rhs in
-                    lhs.appName.localizedCaseInsensitiveCompare(rhs.appName) == .orderedAscending
-                }
-            )
+        } catch {
+            return []
         }
-        
-        return groups
     }
     
-    private static func orderCollection<T>(
-        _ values: inout [T],
-        value: (T) -> Double,
-        descending: Bool,
-        tieBreaker: (T, T) -> Bool
-    ) {
-        values.sort { lhs, rhs in
-            let lhsValue = normalizedSortValue(value(lhs), descending: descending)
-            let rhsValue = normalizedSortValue(value(rhs), descending: descending)
+    static func groupProcessesCancellable(
+        _ processes: [AppProcessInfo],
+        sortBy: ProcessMonitor.SortOption,
+        showHighUsageFirst: Bool = false
+    ) throws -> [ProcessGroup] {
+        var checkCounter = 0
+        try checkCancellation(counter: &checkCounter)
+        
+        var groupDict: [String: [AppProcessInfo]] = [:]
+        groupDict.reserveCapacity(processes.count)
+        
+        for process in processes {
+            try checkCancellation(counter: &checkCounter)
             
-            if lhsValue == rhsValue {
-                return tieBreaker(lhs, rhs)
+            let groupName = process.parentApp ?? (process.isSystemProcess ? "システム" : process.name)
+            groupDict[groupName, default: []].append(process)
+        }
+        
+        var groups: [ProcessGroup] = []
+        groups.reserveCapacity(groupDict.count)
+        
+        for (groupName, groupedProcesses) in groupDict {
+            try checkCancellation(counter: &checkCounter)
+            groups.append(ProcessGroup(appName: groupName, processes: groupedProcesses))
+        }
+        
+        let comparator = groupComparator(
+            sortBy: sortBy,
+            showHighUsageFirst: showHighUsageFirst
+        )
+        
+        return try stableMergeSort(
+            groups,
+            by: comparator,
+            checkCounter: &checkCounter
+        )
+    }
+    
+    private static func processComparator(
+        sortBy: ProcessMonitor.SortOption,
+        showHighUsageFirst: Bool
+    ) -> (AppProcessInfo, AppProcessInfo) -> Bool {
+        let descending = showHighUsageFirst
+        
+        return { lhs, rhs in
+            let lhsMetric: Double
+            let rhsMetric: Double
+            
+            switch sortBy {
+            case .cpu:
+                lhsMetric = lhs.cpuUsage
+                rhsMetric = rhs.cpuUsage
+            case .memory:
+                lhsMetric = lhs.memoryUsage
+                rhsMetric = rhs.memoryUsage
             }
             
-            return descending ? lhsValue > rhsValue : lhsValue < rhsValue
+            let lhsValue = normalizedSortValue(lhsMetric, descending: descending)
+            let rhsValue = normalizedSortValue(rhsMetric, descending: descending)
+            
+            if lhsValue != rhsValue {
+                return descending ? lhsValue > rhsValue : lhsValue < rhsValue
+            }
+            
+            let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
+            }
+            return lhs.pid < rhs.pid
+        }
+    }
+    
+    private static func groupComparator(
+        sortBy: ProcessMonitor.SortOption,
+        showHighUsageFirst: Bool
+    ) -> (ProcessGroup, ProcessGroup) -> Bool {
+        let descending = showHighUsageFirst
+        
+        return { lhs, rhs in
+            let lhsMetric: Double
+            let rhsMetric: Double
+            
+            switch sortBy {
+            case .cpu:
+                lhsMetric = lhs.totalCPU
+                rhsMetric = rhs.totalCPU
+            case .memory:
+                lhsMetric = lhs.totalMemory
+                rhsMetric = rhs.totalMemory
+            }
+            
+            let lhsValue = normalizedSortValue(lhsMetric, descending: descending)
+            let rhsValue = normalizedSortValue(rhsMetric, descending: descending)
+            
+            if lhsValue != rhsValue {
+                return descending ? lhsValue > rhsValue : lhsValue < rhsValue
+            }
+            
+            return lhs.appName.localizedCaseInsensitiveCompare(rhs.appName) == .orderedAscending
+        }
+    }
+    
+    private static func stableMergeSort<T>(
+        _ values: [T],
+        by areInOrder: (T, T) -> Bool,
+        checkCounter: inout Int
+    ) throws -> [T] {
+        guard values.count > 1 else {
+            return values
+        }
+        
+        var source = values
+        var destination = values
+        var width = 1
+        
+        while width < source.count {
+            var start = 0
+            while start < source.count {
+                try checkCancellation(counter: &checkCounter)
+                
+                let middle = min(start + width, source.count)
+                let end = min(start + (2 * width), source.count)
+                
+                try mergeRuns(
+                    source: source,
+                    destination: &destination,
+                    start: start,
+                    middle: middle,
+                    end: end,
+                    by: areInOrder,
+                    checkCounter: &checkCounter
+                )
+                
+                start += (2 * width)
+            }
+            
+            swap(&source, &destination)
+            width *= 2
+        }
+        
+        return source
+    }
+    
+    private static func mergeRuns<T>(
+        source: [T],
+        destination: inout [T],
+        start: Int,
+        middle: Int,
+        end: Int,
+        by areInOrder: (T, T) -> Bool,
+        checkCounter: inout Int
+    ) throws {
+        var left = start
+        var right = middle
+        var index = start
+        
+        while left < middle && right < end {
+            try checkCancellation(counter: &checkCounter)
+            
+            if areInOrder(source[left], source[right]) {
+                destination[index] = source[left]
+                left += 1
+            } else if areInOrder(source[right], source[left]) {
+                destination[index] = source[right]
+                right += 1
+            } else {
+                // 同値の場合は左側を優先してstable sortを維持する。
+                destination[index] = source[left]
+                left += 1
+            }
+            index += 1
+        }
+        
+        while left < middle {
+            try checkCancellation(counter: &checkCounter)
+            destination[index] = source[left]
+            left += 1
+            index += 1
+        }
+        
+        while right < end {
+            try checkCancellation(counter: &checkCounter)
+            destination[index] = source[right]
+            right += 1
+            index += 1
+        }
+    }
+    
+    private static func checkCancellation(counter: inout Int) throws {
+        counter += 1
+        if counter % cancellationCheckStride == 0 {
+            try Task.checkCancellation()
         }
     }
     
@@ -917,6 +1264,8 @@ enum ProcessSnapshotBuilder {
         }
         return value
     }
+    
+    private static let cancellationCheckStride = 128
     
     private static func runPS() throws -> String {
         let task = Process()
@@ -1066,13 +1415,14 @@ enum ProcessSnapshotBuilder {
     private static func resolveExecutablePath(pid: Int32, commandPath: String) -> String? {
         let commandExecutablePath = extractExecutablePath(from: commandPath)
         if let commandExecutablePath,
-           shouldTrustCommandExecutablePath(commandExecutablePath, originalCommandPath: commandPath) {
+           shouldTrustCommandExecutablePath(commandExecutablePath, originalCommandPath: commandPath),
+           let validatedCommandPath = validatedExecutablePath(commandExecutablePath) {
             cacheExecutablePath(
                 pid: pid,
-                commandSignature: commandSignature(from: commandExecutablePath),
-                executablePath: commandExecutablePath
+                commandSignature: commandSignature(from: validatedCommandPath),
+                executablePath: validatedCommandPath
             )
-            return commandExecutablePath
+            return validatedCommandPath
         }
         
         let signature = commandSignature(from: commandExecutablePath ?? commandPath)
@@ -1082,30 +1432,32 @@ enum ProcessSnapshotBuilder {
         }
         
         if isExecutablePathKnownMiss(pid: pid, commandSignature: signature) {
-            return commandExecutablePath
+            return validatedExecutablePath(commandExecutablePath)
         }
         
-        if let pidPath = executablePathFromPID(pid: pid) {
+        if let pidPath = executablePathFromPID(pid: pid),
+           let validatedPIDPath = validatedExecutablePath(pidPath) {
             cacheExecutablePath(
                 pid: pid,
                 commandSignature: signature,
-                executablePath: pidPath
+                executablePath: validatedPIDPath
             )
-            return pidPath
+            return validatedPIDPath
         }
         
         if let commandExecutablePath,
-           shouldUseCommandExecutablePath(commandExecutablePath) {
+           shouldUseCommandExecutablePath(commandExecutablePath),
+           let validatedCommandPath = validatedExecutablePath(commandExecutablePath) {
             cacheExecutablePath(
                 pid: pid,
                 commandSignature: signature,
-                executablePath: commandExecutablePath
+                executablePath: validatedCommandPath
             )
-            return commandExecutablePath
+            return validatedCommandPath
         }
         
         cacheExecutablePathMiss(pid: pid, commandSignature: signature)
-        return commandExecutablePath
+        return nil
     }
     
     private static func executablePathFromPID(pid: Int32) -> String? {
@@ -1132,6 +1484,21 @@ enum ProcessSnapshotBuilder {
     private static func shouldUseCommandExecutablePath(_ path: String) -> Bool {
         let normalizedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalizedPath.hasPrefix("/")
+    }
+    
+    private static func validatedExecutablePath(_ path: String?) -> String? {
+        guard let path else { return nil }
+        
+        let normalizedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPath.isEmpty, normalizedPath.hasPrefix("/") else {
+            return nil
+        }
+        
+        guard FileManager.default.fileExists(atPath: normalizedPath) else {
+            return nil
+        }
+        
+        return normalizedPath
     }
     
     private static func shouldTrustCommandExecutablePath(_ extractedPath: String, originalCommandPath: String) -> Bool {
@@ -1205,7 +1572,11 @@ enum ProcessSnapshotBuilder {
         
         guard let cached = executablePathCache[pid] else { return nil }
         guard cached.commandSignature == commandSignature else { return nil }
-        return cached.executablePath
+        guard let validatedPath = validatedExecutablePath(cached.executablePath) else {
+            executablePathCache.removeValue(forKey: pid)
+            return nil
+        }
+        return validatedPath
     }
     
     private static func isExecutablePathKnownMiss(pid: Int32, commandSignature: String) -> Bool {
@@ -1217,6 +1588,10 @@ enum ProcessSnapshotBuilder {
     }
     
     private static func cacheExecutablePath(pid: Int32, commandSignature: String, executablePath: String) {
+        guard let validatedPath = validatedExecutablePath(executablePath) else {
+            return
+        }
+        
         executablePathCacheLock.lock()
         defer { executablePathCacheLock.unlock() }
 
@@ -1225,7 +1600,7 @@ enum ProcessSnapshotBuilder {
         }
         executablePathCache[pid] = ExecutablePathCacheEntry(
             commandSignature: commandSignature,
-            executablePath: executablePath
+            executablePath: validatedPath
         )
 
         let missKey = ExecutablePathMissKey(pid: pid, commandSignature: commandSignature)

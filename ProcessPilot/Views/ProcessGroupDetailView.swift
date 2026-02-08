@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProcessGroupDetailView: View {
     let group: ProcessGroup
+    let isTerminating: Bool
     let onTerminateGroup: () -> Void
     let onForceTerminateGroup: () -> Void
     @State private var isProcessListExpanded = false
@@ -197,6 +198,16 @@ struct ProcessGroupDetailView: View {
             Text("操作")
                 .font(.headline)
             
+            if isTerminating {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("グループ終了中...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
             HStack(spacing: 12) {
                 Button(action: onTerminateGroup) {
                     Label("グループ終了", systemImage: "xmark.circle")
@@ -204,6 +215,7 @@ struct ProcessGroupDetailView: View {
                 }
                 .buttonStyle(.bordered)
                 .tint(.orange)
+                .disabled(isTerminating)
                 
                 Button(action: onForceTerminateGroup) {
                     Label("グループ強制終了", systemImage: "xmark.circle.fill")
@@ -211,6 +223,7 @@ struct ProcessGroupDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
+                .disabled(isTerminating)
             }
         }
     }
@@ -243,6 +256,7 @@ struct ProcessGroupDetailView: View {
                 )
             ]
         ),
+        isTerminating: false,
         onTerminateGroup: {},
         onForceTerminateGroup: {}
     )

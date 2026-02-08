@@ -1,11 +1,17 @@
 import XCTest
+import Foundation
 @testable import ProcessPilot
 
 final class ProcessSnapshotBuilderTests: XCTestCase {
     func testParseProcessesExtractsExpectedFields() throws {
+        let safariExecutablePath = try makeTemporaryExecutablePath(
+            bundleName: "Safari.app",
+            executableName: "Safari"
+        )
+        
         let output = """
-        testuser 999001 12.5 1.0 /Applications/Safari.app/Contents/MacOS/Safari
-        root 999002 0.0 0.1 /System/Library/Kernels/kernel_task
+        testuser 999001 12.5 1.0 \(safariExecutablePath)
+        root 999002 0.0 0.1 /usr/libexec/xpcproxy
         """
         
         let processes = ProcessSnapshotBuilder.parseProcesses(output)
@@ -15,35 +21,45 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         let safari = try XCTUnwrap(processes.first { $0.pid == 999001 })
         XCTAssertEqual(safari.name, "Safari")
         XCTAssertEqual(safari.parentApp, "Safari")
-        XCTAssertEqual(safari.executablePath, "/Applications/Safari.app/Contents/MacOS/Safari")
+        XCTAssertEqual(safari.executablePath, safariExecutablePath)
         XCTAssertEqual(safari.source, .application)
         XCTAssertFalse(safari.isSystemProcess)
         XCTAssertGreaterThan(safari.memoryUsage, 0)
         
-        let kernelTask = try XCTUnwrap(processes.first { $0.pid == 999002 })
-        XCTAssertEqual(kernelTask.name, "kernel_task")
-        XCTAssertEqual(kernelTask.executablePath, "/System/Library/Kernels/kernel_task")
-        XCTAssertEqual(kernelTask.source, .system)
-        XCTAssertTrue(kernelTask.isSystemProcess)
+        let systemProcess = try XCTUnwrap(processes.first { $0.pid == 999002 })
+        XCTAssertEqual(systemProcess.name, "xpcproxy")
+        XCTAssertEqual(systemProcess.executablePath, "/usr/libexec/xpcproxy")
+        XCTAssertEqual(systemProcess.source, .system)
+        XCTAssertTrue(systemProcess.isSystemProcess)
     }
     
     func testParseProcessesHandlesExecutablePathsWithSpaces() throws {
+        let executablePath = try makeTemporaryExecutablePath(
+            bundleName: "OpenIn Helper.app",
+            executableName: "OpenIn Helper"
+        )
+        
         let output = """
-        testuser 999003 1.0 0.5 /Applications/OpenIn Helper.app/Contents/MacOS/OpenIn Helper --type=renderer
+        testuser 999003 1.0 0.5 \(executablePath) --type=renderer
         """
         
         let processes = ProcessSnapshotBuilder.parseProcesses(output)
         XCTAssertEqual(processes.count, 1)
         
         let process = try XCTUnwrap(processes.first)
-        XCTAssertEqual(process.executablePath, "/Applications/OpenIn Helper.app/Contents/MacOS/OpenIn Helper")
+        XCTAssertEqual(process.executablePath, executablePath)
         XCTAssertEqual(process.name, "OpenIn Helper")
         XCTAssertEqual(process.parentApp, "OpenIn Helper")
     }
     
     func testParseProcessesDoesNotTruncateLongProcessName() throws {
+        let executablePath = try makeTemporaryExecutablePath(
+            bundleName: "LongNameApp.app",
+            executableName: "ThisIsAVeryLongProcessBinaryNameForTesting"
+        )
+        
         let output = """
-        testuser 999004 2.0 0.3 /Applications/LongNameApp.app/Contents/MacOS/ThisIsAVeryLongProcessBinaryNameForTesting
+        testuser 999004 2.0 0.3 \(executablePath)
         """
         
         let processes = ProcessSnapshotBuilder.parseProcesses(output)
@@ -55,47 +71,72 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
     }
     
     func testParseProcessesStripsFilePathArgumentFromAppCommand() throws {
+        let executablePath = try makeTemporaryExecutablePath(
+            bundleName: "TextEdit.app",
+            executableName: "TextEdit"
+        )
+        
         let output = """
-        testuser 999005 0.9 0.2 /Applications/TextEdit.app/Contents/MacOS/TextEdit /Users/test/Documents/note.txt
+        testuser 999005 0.9 0.2 \(executablePath) /Users/test/Documents/note.txt
         """
         
         let processes = ProcessSnapshotBuilder.parseProcesses(output)
         XCTAssertEqual(processes.count, 1)
         
         let process = try XCTUnwrap(processes.first)
-        XCTAssertEqual(process.executablePath, "/Applications/TextEdit.app/Contents/MacOS/TextEdit")
+        XCTAssertEqual(process.executablePath, executablePath)
         XCTAssertEqual(process.name, "TextEdit")
         XCTAssertEqual(process.parentApp, "TextEdit")
     }
     
     func testParseProcessesDoesNotTruncateAppPathContainingHyphen() throws {
+        let executablePath = try makeTemporaryExecutablePath(
+            bundleName: "Visual Studio Code - Insiders.app",
+            executableName: "Electron"
+        )
+        
         let output = """
-        testuser 999006 1.3 0.4 /Applications/Visual Studio Code - Insiders.app/Contents/MacOS/Electron --type=renderer
+        testuser 999006 1.3 0.4 \(executablePath) --type=renderer
         """
         
         let processes = ProcessSnapshotBuilder.parseProcesses(output)
         XCTAssertEqual(processes.count, 1)
         
         let process = try XCTUnwrap(processes.first)
-        XCTAssertEqual(
-            process.executablePath,
-            "/Applications/Visual Studio Code - Insiders.app/Contents/MacOS/Electron"
-        )
+        XCTAssertEqual(process.executablePath, executablePath)
         XCTAssertEqual(process.parentApp, "Visual Studio Code - Insiders")
     }
     
     func testParseProcessesStripsSingleHyphenArgumentFromAppCommand() throws {
+        let executablePath = try makeTemporaryExecutablePath(
+            bundleName: "TextEdit.app",
+            executableName: "TextEdit"
+        )
+        
         let output = """
-        testuser 999007 0.5 0.1 /Applications/TextEdit.app/Contents/MacOS/TextEdit -psn_0_12345
+        testuser 999007 0.5 0.1 \(executablePath) -psn_0_12345
         """
         
         let processes = ProcessSnapshotBuilder.parseProcesses(output)
         XCTAssertEqual(processes.count, 1)
         
         let process = try XCTUnwrap(processes.first)
-        XCTAssertEqual(process.executablePath, "/Applications/TextEdit.app/Contents/MacOS/TextEdit")
+        XCTAssertEqual(process.executablePath, executablePath)
         XCTAssertEqual(process.name, "TextEdit")
         XCTAssertEqual(process.parentApp, "TextEdit")
+    }
+    
+    func testParseProcessesDropsUnresolvableExecutablePathFallback() throws {
+        let output = """
+        testuser 999998 0.8 0.2 /Applications/DefinitelyMissingApp.app/Contents/MacOS/Missing --type=renderer
+        """
+        
+        let processes = ProcessSnapshotBuilder.parseProcesses(output)
+        XCTAssertEqual(processes.count, 1)
+        
+        let process = try XCTUnwrap(processes.first)
+        XCTAssertNil(process.executablePath)
+        XCTAssertEqual(process.source, .unknown)
     }
     
     func testSortAndGroupProcesses() {
@@ -237,6 +278,55 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(sorted.map(\.pid), [2, 3, 1])
     }
     
+    func testSortProcessesCancellableMatchesLegacyOrdering() throws {
+        let input = [
+            makeProcess(pid: 3, name: "Gamma", cpu: 30.0, memory: 300),
+            makeProcess(pid: 2, name: "Beta", cpu: 30.0, memory: 200),
+            makeProcess(pid: 1, name: "Alpha", cpu: 10.0, memory: 100)
+        ]
+        
+        let expected = ProcessSnapshotBuilder.sortProcesses(
+            input,
+            sortBy: .cpu,
+            filterText: "",
+            showHighUsageFirst: true
+        )
+        let actual = try ProcessSnapshotBuilder.sortProcessesCancellable(
+            input,
+            sortBy: .cpu,
+            filterText: "",
+            showHighUsageFirst: true
+        )
+        
+        XCTAssertEqual(actual.map(\.pid), expected.map(\.pid))
+    }
+    
+    func testSortProcessesCancellableThrowsOnCancellation() async {
+        let input = makeLargeProcessInput(count: 5000)
+        
+        let task = Task.detached { () -> Result<[AppProcessInfo], Error> in
+            do {
+                let sorted = try ProcessSnapshotBuilder.sortProcessesCancellable(
+                    input,
+                    sortBy: .cpu,
+                    filterText: "",
+                    showHighUsageFirst: true
+                )
+                return .success(sorted)
+            } catch {
+                return .failure(error)
+            }
+        }
+        task.cancel()
+        
+        switch await task.value {
+        case .success:
+            XCTFail("Expected CancellationError")
+        case .failure(let error):
+            XCTAssertTrue(error is CancellationError, "Unexpected error: \(error)")
+        }
+    }
+    
     func testUsageSmootherUsesMovingAverageWindowOfThree() {
         var smoother = UsageSmoother(windowSize: 3)
         
@@ -301,6 +391,7 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(result.processes[0].cpuUsage, 50, accuracy: 0.001)
         XCTAssertEqual(result.state.cpuTimeTicksByPID[10], 112_000_000)
         XCTAssertEqual(result.state.sampleTimestampNanoseconds, 2_000_000_000)
+        XCTAssertTrue(result.hasValidElapsedInterval)
     }
     
     func testCPUUsageDeltaCalculatorReturnsZeroWhenNoPreviousSample() {
@@ -316,6 +407,7 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         )
         
         XCTAssertEqual(result.processes[0].cpuUsage, 0, accuracy: 0.001)
+        XCTAssertFalse(result.hasValidElapsedInterval)
     }
     
     func testCPUUsageDeltaCalculatorReturnsZeroForNewPIDInElapsedWindow() {
@@ -335,6 +427,28 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
         )
         
         XCTAssertEqual(result.processes[0].cpuUsage, 0, accuracy: 0.001)
+    }
+    
+    func testCPUUsageDeltaCalculatorReturnsZeroWhenElapsedIntervalIsTooShort() {
+        let processes = [makeProcess(pid: 10, name: "A", cpu: 99.9, memory: 100)]
+        let previousState = CPUUsageDeltaState(
+            cpuTimeTicksByPID: [10: 100_000_000],
+            sampleTimestampNanoseconds: 1_000_000_000
+        )
+        
+        let result = CPUUsageDeltaCalculator.calculate(
+            processes: processes,
+            currentCPUTimeTicksByPID: [10: 112_000_000],
+            previousState: previousState,
+            timestampNanoseconds: 1_400_000_000,
+            timebaseNumer: 125,
+            timebaseDenom: 3
+        )
+        
+        XCTAssertEqual(result.processes[0].cpuUsage, 0, accuracy: 0.001)
+        XCTAssertEqual(result.state.cpuTimeTicksByPID[10], 112_000_000)
+        XCTAssertEqual(result.state.sampleTimestampNanoseconds, 1_400_000_000)
+        XCTAssertFalse(result.hasValidElapsedInterval)
     }
     
     func testCPUUsageDeltaCalculatorPrunesRemovedPIDsFromState() {
@@ -476,6 +590,49 @@ final class ProcessSnapshotBuilderTests: XCTestCase {
             isSystemProcess: false,
             parentApp: nil
         )
+    }
+    
+    private func makeTemporaryExecutablePath(
+        bundleName: String,
+        executableName: String
+    ) throws -> String {
+        let fileManager = FileManager.default
+        let rootDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("ProcessSnapshotBuilderTests-\(UUID().uuidString)", isDirectory: true)
+        let executableURL = rootDirectory
+            .appendingPathComponent(bundleName, isDirectory: true)
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("MacOS", isDirectory: true)
+            .appendingPathComponent(executableName)
+        
+        try fileManager.createDirectory(
+            at: executableURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        fileManager.createFile(atPath: executableURL.path, contents: Data(), attributes: nil)
+        return executableURL.path
+    }
+    
+    private func makeLargeProcessInput(count: Int) -> [AppProcessInfo] {
+        var result: [AppProcessInfo] = []
+        result.reserveCapacity(count)
+        
+        for index in 0..<count {
+            result.append(
+                AppProcessInfo(
+                    pid: Int32(index + 1),
+                    name: "Process\(index)",
+                    user: "user",
+                    cpuUsage: Double(count - index),
+                    memoryUsage: Double(index),
+                    description: "desc",
+                    isSystemProcess: false,
+                    parentApp: nil
+                )
+            )
+        }
+        
+        return result
     }
     
     private func makeGroup(name: String, cpu: Double, isSystem: Bool) -> ProcessGroup {
