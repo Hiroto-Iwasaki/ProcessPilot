@@ -791,9 +791,11 @@ enum ProcessSnapshotBuilder {
     }
     
     private static let executablePathCacheLimit = 4096
+    private static let executablePathCacheCompactionThreshold = 1024
     private static var executablePathCache: [Int32: ExecutablePathCacheEntry] = [:]
     private static var executablePathMissCache: Set<ExecutablePathMissKey> = []
     private static var executablePathCacheOrder: [ExecutablePathCacheKey] = []
+    private static var executablePathCacheHeadIndex = 0
     private static let executablePathCacheLock = NSLock()
     
     static func fetchProcesses() throws -> [AppProcessInfo] {
@@ -807,7 +809,14 @@ enum ProcessSnapshotBuilder {
         filterText: String,
         showHighUsageFirst: Bool = false
     ) -> [AppProcessInfo] {
-        var sorted = processes
+        let normalizedFilterText = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = normalizedFilterText.isEmpty
+            ? processes
+            : processes.filter {
+                $0.name.localizedCaseInsensitiveContains(normalizedFilterText) ||
+                $0.description.localizedCaseInsensitiveContains(normalizedFilterText)
+            }
+        var sorted = filtered
         let descending = showHighUsageFirst
         
         switch sortBy {
@@ -837,13 +846,6 @@ enum ProcessSnapshotBuilder {
                     return lhs.pid < rhs.pid
                 }
             )
-        }
-        
-        if !filterText.isEmpty {
-            sorted = sorted.filter {
-                $0.name.localizedCaseInsensitiveContains(filterText) ||
-                $0.description.localizedCaseInsensitiveContains(filterText)
-            }
         }
         
         return sorted
@@ -1217,47 +1219,47 @@ enum ProcessSnapshotBuilder {
     private static func cacheExecutablePath(pid: Int32, commandSignature: String, executablePath: String) {
         executablePathCacheLock.lock()
         defer { executablePathCacheLock.unlock() }
-        
-        let hitKey = ExecutablePathCacheKey.hit(pid)
-        executablePathCacheOrder.removeAll { $0 == hitKey }
-        
+
+        if executablePathCache[pid] == nil {
+            executablePathCacheOrder.append(.hit(pid))
+        }
         executablePathCache[pid] = ExecutablePathCacheEntry(
             commandSignature: commandSignature,
             executablePath: executablePath
         )
-        
+
         let missKey = ExecutablePathMissKey(pid: pid, commandSignature: commandSignature)
-        let cacheMissKey = ExecutablePathCacheKey.miss(missKey)
         executablePathMissCache.remove(missKey)
-        executablePathCacheOrder.removeAll { $0 == cacheMissKey }
-        
-        executablePathCacheOrder.append(hitKey)
         trimExecutablePathCachesIfNeeded()
     }
     
     private static func cacheExecutablePathMiss(pid: Int32, commandSignature: String) {
         executablePathCacheLock.lock()
         defer { executablePathCacheLock.unlock() }
-        
+
         let missKey = ExecutablePathMissKey(pid: pid, commandSignature: commandSignature)
-        let cacheMissKey = ExecutablePathCacheKey.miss(missKey)
-        executablePathCacheOrder.removeAll { $0 == cacheMissKey }
-        
-        executablePathMissCache.insert(missKey)
-        executablePathCacheOrder.append(cacheMissKey)
+        if executablePathMissCache.insert(missKey).inserted {
+            executablePathCacheOrder.append(.miss(missKey))
+        }
         trimExecutablePathCachesIfNeeded()
     }
     
     private static func trimExecutablePathCachesIfNeeded() {
         while executablePathCache.count + executablePathMissCache.count > executablePathCacheLimit {
-            guard let oldest = executablePathCacheOrder.first else {
+            if executablePathCacheHeadIndex >= executablePathCacheOrder.count {
+                rebuildExecutablePathCacheOrder()
+            }
+
+            guard executablePathCacheHeadIndex < executablePathCacheOrder.count else {
                 executablePathCache.removeAll(keepingCapacity: true)
                 executablePathMissCache.removeAll(keepingCapacity: true)
+                executablePathCacheOrder.removeAll(keepingCapacity: true)
+                executablePathCacheHeadIndex = 0
                 return
             }
-            
-            executablePathCacheOrder.removeFirst()
-            
+
+            let oldest = executablePathCacheOrder[executablePathCacheHeadIndex]
+            executablePathCacheHeadIndex += 1
             switch oldest {
             case .hit(let pid):
                 executablePathCache.removeValue(forKey: pid)
@@ -1265,5 +1267,25 @@ enum ProcessSnapshotBuilder {
                 executablePathMissCache.remove(missKey)
             }
         }
+
+        compactExecutablePathCacheOrderIfNeeded()
+    }
+
+    private static func rebuildExecutablePathCacheOrder() {
+        executablePathCacheOrder = executablePathCache.keys.map(ExecutablePathCacheKey.hit)
+        executablePathCacheOrder.append(
+            contentsOf: executablePathMissCache.map(ExecutablePathCacheKey.miss)
+        )
+        executablePathCacheHeadIndex = 0
+    }
+
+    private static func compactExecutablePathCacheOrderIfNeeded() {
+        guard executablePathCacheHeadIndex >= executablePathCacheCompactionThreshold,
+              executablePathCacheHeadIndex * 2 >= executablePathCacheOrder.count else {
+            return
+        }
+
+        executablePathCacheOrder.removeFirst(executablePathCacheHeadIndex)
+        executablePathCacheHeadIndex = 0
     }
 }
