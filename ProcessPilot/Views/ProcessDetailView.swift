@@ -4,6 +4,7 @@ struct ProcessDetailView: View {
     let process: AppProcessInfo
     let onTerminate: () -> Void
     let onForceTerminate: () -> Void
+    @State private var isExecutablePathExpanded = false
     
     var body: some View {
         ScrollView {
@@ -38,6 +39,9 @@ struct ProcessDetailView: View {
         }
         .frame(minWidth: 280)
         .background(Color(NSColor.controlBackgroundColor))
+        .onChange(of: process.pid) { _ in
+            isExecutablePathExpanded = false
+        }
     }
     
     // MARK: - Header Section
@@ -183,14 +187,31 @@ struct ProcessDetailView: View {
             )
             
             if let executablePath = process.executablePath {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("実行ファイル")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isExecutablePathExpanded.toggle()
+                        }
+                    }) {
+                        HStack(spacing: 8) {
+                            Text("実行ファイル")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Image(systemName: isExecutablePathExpanded ? "chevron.down" : "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                     
-                    Text(executablePath)
-                        .font(.caption)
-                        .textSelection(.enabled)
+                    if isExecutablePathExpanded {
+                        Text(executablePath)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             } else {
                 DetailRow(label: "実行ファイル", value: "取得不可")
