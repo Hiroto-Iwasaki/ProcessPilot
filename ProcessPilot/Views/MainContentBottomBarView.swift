@@ -115,8 +115,8 @@ private struct MemoryBottomPanel: View {
                 rows: [
                     ("物理メモリ:", ProcessDisplayMetrics.memoryText(for: metrics.physicalMemoryMB, gbPrecision: 2, mbPrecision: 1)),
                     ("使用済みメモリ:", ProcessDisplayMetrics.memoryText(for: metrics.usedMemoryMB, gbPrecision: 2, mbPrecision: 1)),
-                    ("キャッシュされたファイル:", ProcessDisplayMetrics.memoryText(for: metrics.cachedFilesMB, gbPrecision: 2, mbPrecision: 1)),
-                    ("スワップ使用領域:", ProcessDisplayMetrics.memoryText(for: metrics.swapUsedMB, gbPrecision: 2, mbPrecision: 1))
+                    ("現在利用中（回収可能）:", ProcessDisplayMetrics.memoryText(for: metrics.cachedFilesMB, gbPrecision: 2, mbPrecision: 1)),
+                    ("メモリからの退避分:", ProcessDisplayMetrics.memoryText(for: metrics.swapUsedMB, gbPrecision: 2, mbPrecision: 1))
                 ]
             )
             .frame(maxWidth: .infinity)
@@ -127,7 +127,7 @@ private struct MemoryBottomPanel: View {
             MemoryMetricColumn(
                 rows: [
                     ("アプリメモリ:", ProcessDisplayMetrics.memoryText(for: metrics.appMemoryMB, gbPrecision: 2, mbPrecision: 1)),
-                    ("確保されているメモリ:", ProcessDisplayMetrics.memoryText(for: metrics.wiredMemoryMB, gbPrecision: 2, mbPrecision: 1)),
+                    ("システム固定メモリ:", ProcessDisplayMetrics.memoryText(for: metrics.wiredMemoryMB, gbPrecision: 2, mbPrecision: 1)),
                     ("圧縮:", ProcessDisplayMetrics.memoryText(for: metrics.compressedMemoryMB, gbPrecision: 2, mbPrecision: 1))
                 ]
             )
