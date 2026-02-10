@@ -9,35 +9,37 @@ struct ProcessGroupDetailView: View {
     
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                headerSection
-                
-                Divider()
-                
-                resourceSection
-                
-                Divider()
-                
-                detailSection
-                
-                Divider()
-                
-                actionSection
-                
-                Spacer()
+            VStack(alignment: .leading, spacing: 14) {
+                SidebarSectionCard {
+                    headerSection
+                }
+
+                SidebarSectionCard(title: "グループ使用量") {
+                    resourceSection
+                }
+
+                SidebarSectionCard(title: "グループ情報") {
+                    detailSection
+                }
+
+                SidebarSectionCard(title: "操作") {
+                    actionSection
+                }
+
+                Spacer(minLength: 8)
             }
-            .padding(24)
+            .padding(20)
         }
-        .frame(minWidth: 280)
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Color.clear)
+        .padding(10)
     }
     
     private var headerSection: some View {
         HStack(spacing: 16) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(group.isSystemGroup ? Color.orange.opacity(0.2) : Color.blue.opacity(0.2))
-                    .frame(width: 56, height: 56)
+                    .fill(group.isSystemGroup ? Color.orange.opacity(0.14) : Color.blue.opacity(0.14))
+                    .frame(width: 58, height: 58)
 
                 if let appIcon = ProcessAppIconProvider.icon(forExecutablePath: group.representativeExecutablePath) {
                     Image(nsImage: appIcon)
@@ -65,9 +67,11 @@ struct ProcessGroupDetailView: View {
                             .font(.caption)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.2))
+                            .background(
+                                Capsule()
+                                    .fill(Color.orange.opacity(0.2))
+                            )
                             .foregroundColor(.orange)
-                            .cornerRadius(4)
                     }
                 }
                 
@@ -75,78 +79,36 @@ struct ProcessGroupDetailView: View {
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
+
+            Spacer(minLength: 0)
         }
     }
     
     private var resourceSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("グループ使用量")
-                .font(.headline)
-            
-            HStack(spacing: 24) {
-                resourceRing(
-                    title: "CPU",
-                    icon: "cpu",
-                    value: String(format: "%.1f", group.totalCPU),
-                    unit: "%",
-                    progress: min(group.totalCPU / 100, 1.0),
-                    color: ProcessDisplayMetrics.cpuColor(for: group.totalCPU)
-                )
-                
-                resourceRing(
-                    title: "メモリ",
-                    icon: "memorychip",
-                    value: ProcessDisplayMetrics.memoryValue(for: group.totalMemory),
-                    unit: ProcessDisplayMetrics.memoryUnit(for: group.totalMemory),
-                    progress: min(group.totalMemory / 8192, 1.0),
-                    color: ProcessDisplayMetrics.memoryColor(for: group.totalMemory)
-                )
-            }
-            .frame(maxWidth: .infinity)
+        HStack(spacing: 20) {
+            SidebarMetricRing(
+                title: "CPU",
+                icon: "cpu",
+                value: ProcessDisplayMetrics.cpuValueText(for: group.totalCPU),
+                unit: "%",
+                progress: group.totalCPU / 100,
+                color: cpuRingColor(for: group.totalCPU)
+            )
+
+            SidebarMetricRing(
+                title: "メモリ",
+                icon: "memorychip",
+                value: ProcessDisplayMetrics.memoryValue(for: group.totalMemory),
+                unit: ProcessDisplayMetrics.memoryUnit(for: group.totalMemory),
+                progress: group.totalMemory / 8192,
+                color: memoryRingColor(for: group.totalMemory)
+            )
         }
-    }
-    
-    private func resourceRing(
-        title: String,
-        icon: String,
-        value: String,
-        unit: String,
-        progress: Double,
-        color: Color
-    ) -> some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .stroke(Color.gray.opacity(0.2), lineWidth: 8)
-                    .frame(width: 80, height: 80)
-                
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(color, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                    .frame(width: 80, height: 80)
-                    .rotationEffect(.degrees(-90))
-                
-                VStack(spacing: 0) {
-                    Text(value)
-                        .font(.title3)
-                        .fontWeight(.bold)
-                    Text(unit)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            Label(title, systemImage: icon)
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
+        .frame(maxWidth: .infinity)
     }
     
     private var detailSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("グループ情報")
-                .font(.headline)
-            
             DetailRow(label: "グループ名", value: group.appName)
             DetailRow(label: "プロセス数", value: "\(group.processCount)")
             DetailRow(
@@ -187,6 +149,11 @@ struct ProcessGroupDetailView: View {
                             }
                         }
                         .padding(.top, 4)
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.white.opacity(0.05))
+                        )
                     }
                 }
             }
@@ -195,9 +162,6 @@ struct ProcessGroupDetailView: View {
     
     private var actionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("操作")
-                .font(.headline)
-            
             if isTerminating {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -210,7 +174,7 @@ struct ProcessGroupDetailView: View {
             
             HStack(spacing: 12) {
                 Button(action: onTerminateGroup) {
-                    Label("グループ終了", systemImage: "xmark.circle")
+                    Label("終了", systemImage: "xmark.circle")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
@@ -218,13 +182,35 @@ struct ProcessGroupDetailView: View {
                 .disabled(isTerminating)
                 
                 Button(action: onForceTerminateGroup) {
-                    Label("グループ強制終了", systemImage: "xmark.circle.fill")
+                    Label("強制終了", systemImage: "xmark.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .tint(.red)
                 .disabled(isTerminating)
             }
+        }
+    }
+
+    private func cpuRingColor(for usage: Double) -> Color {
+        switch usage {
+        case ..<40:
+            return .green
+        case ..<80:
+            return .orange
+        default:
+            return .red
+        }
+    }
+
+    private func memoryRingColor(for usageMB: Double) -> Color {
+        switch usageMB {
+        case ..<1024:
+            return .green
+        case ..<4096:
+            return .blue
+        default:
+            return .orange
         }
     }
 }

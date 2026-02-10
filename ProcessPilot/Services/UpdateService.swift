@@ -16,26 +16,40 @@ final class UpdateService: ObservableObject {
     private let repo: String
     private let session: URLSession
     private let currentVersion: AppVersion
+    private let logHandler: (String) -> Void
     
     var isConfigured: Bool {
         !owner.isEmpty && !repo.isEmpty
     }
     
-    init(session: URLSession = .shared) {
+    init(
+        session: URLSession = .shared,
+        owner: String? = nil,
+        repo: String? = nil,
+        currentVersionString: String? = nil,
+        shouldCheckOnInit: Bool = true,
+        logHandler: ((String) -> Void)? = nil
+    ) {
         self.owner = UpdateService.loadString(
+            override: owner,
             env: "PROCESSPILOT_GITHUB_OWNER",
             plistKey: "PPGitHubOwner"
         )
         self.repo = UpdateService.loadString(
+            override: repo,
             env: "PROCESSPILOT_GITHUB_REPO",
             plistKey: "PPGitHubRepo"
         )
         self.session = session
+        self.logHandler = logHandler ?? { message in
+            print(message)
+        }
         
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        let version = currentVersionString?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0")
         self.currentVersion = AppVersion(version)
         
-        guard isConfigured else { return }
+        guard isConfigured, shouldCheckOnInit else { return }
         
         Task {
             await checkForUpdates()
@@ -63,7 +77,7 @@ final class UpdateService: ObservableObject {
             }
         } catch {
             availableUpdate = nil
-            print("Update check failed: \(error)")
+            logHandler("Update check failed: \(error)")
         }
     }
     
@@ -93,17 +107,28 @@ final class UpdateService: ObservableObject {
         return try JSONDecoder().decode(GitHubRelease.self, from: data)
     }
     
-    private static func loadString(env: String, plistKey: String) -> String {
-        if let value = ProcessInfo.processInfo.environment[env]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !value.isEmpty {
+    private static func loadString(override: String?, env: String, plistKey: String) -> String {
+        if let value = override?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty {
             return value
         }
         
-        if let value = Bundle.main.object(forInfoDictionaryKey: plistKey) as? String {
-            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let value = ProcessInfo.processInfo.environment[env]?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty {
+            return value
+        }
+        
+        if let value = (Bundle.main.object(forInfoDictionaryKey: plistKey) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty {
+            return value
         }
         
         return ""
+    }
+}
+
+private extension String {
+    var nonEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

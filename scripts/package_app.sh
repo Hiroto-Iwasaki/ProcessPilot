@@ -3,6 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REMOTE_PARSER_LIB="${SCRIPT_DIR}/lib/github_remote_parser.sh"
+
+if [[ ! -f "${REMOTE_PARSER_LIB}" ]]; then
+  echo "Error: missing GitHub remote parser at ${REMOTE_PARSER_LIB}" >&2
+  exit 1
+fi
+
+# shellcheck source=/dev/null
+source "${REMOTE_PARSER_LIB}"
 
 APP_NAME="${APP_NAME:-ProcessPilot}"
 HELPER_PRODUCT_NAME="${HELPER_PRODUCT_NAME:-ProcessPilotPrivilegedHelper}"
@@ -29,9 +38,11 @@ fi
 
 if [[ -z "${GITHUB_OWNER}" || -z "${GITHUB_REPO}" ]]; then
   if REMOTE_URL="$(git -C "${PROJECT_ROOT}" remote get-url origin 2>/dev/null)"; then
-    if [[ "${REMOTE_URL}" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
-      GITHUB_OWNER="${GITHUB_OWNER:-${BASH_REMATCH[1]}}"
-      GITHUB_REPO="${GITHUB_REPO:-${BASH_REMATCH[2]}}"
+    if PARSED_GITHUB_REMOTE="$(parse_github_owner_repo "${REMOTE_URL}")"; then
+      PARSED_GITHUB_OWNER="${PARSED_GITHUB_REMOTE%%$'\t'*}"
+      PARSED_GITHUB_REPO="${PARSED_GITHUB_REMOTE#*$'\t'}"
+      GITHUB_OWNER="${GITHUB_OWNER:-${PARSED_GITHUB_OWNER}}"
+      GITHUB_REPO="${GITHUB_REPO:-${PARSED_GITHUB_REPO}}"
     fi
   fi
 fi
