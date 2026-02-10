@@ -18,50 +18,84 @@ struct ContentView: View {
     }
     
     var body: some View {
-        NavigationSplitView {
-            // サイドバー
-            SidebarView(monitor: monitor)
-                .frame(width: 200)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 200, max: 200)
-        } content: {
-            // メインコンテンツ
-            VStack(spacing: 0) {
-                ProcessListView(
-                    processes: monitor.processes,
-                    groups: monitor.groups,
-                    showGrouped: monitor.showGrouped,
-                    selection: $selection
-                )
-                .frame(minWidth: 400, maxHeight: .infinity)
-                
-                BottomBarHostView(sortBy: monitor.sortBy)
-            }
-        } detail: {
-            Group {
-                // 詳細パネル
-                if let group = selectedGroup {
-                    ProcessGroupDetailView(
-                        group: group,
-                        isTerminating: isTerminating,
-                        onTerminateGroup: { handleTerminate(group: group, force: false) },
-                        onForceTerminateGroup: { handleTerminate(group: group, force: true) }
+        ZStack {
+            LiquidGlassBackgroundView()
+                .equatable()
+
+            NavigationSplitView {
+                // サイドバー
+                SidebarView(monitor: monitor)
+                    .padding(.vertical, 8)
+                    .padding(.leading, 8)
+                    .padding(.trailing, 4)
+                    .frame(width: SplitLayoutConstants.leftSidebarWidth)
+                    .navigationSplitViewColumnWidth(
+                        min: SplitLayoutConstants.leftSidebarWidth,
+                        ideal: SplitLayoutConstants.leftSidebarWidth,
+                        max: SplitLayoutConstants.leftSidebarWidth
                     )
-                } else if let process = selectedProcess {
-                    ProcessDetailView(
-                        process: process,
-                        isTerminating: isTerminating,
-                        onTerminate: { handleTerminate(process: process, force: false) },
-                        onForceTerminate: { handleTerminate(process: process, force: true) }
+            } content: {
+                // メインコンテンツ
+                VStack(spacing: 10) {
+                    ProcessListView(
+                        processes: monitor.processes,
+                        groups: monitor.groups,
+                        showGrouped: monitor.showGrouped,
+                        selection: $selection
                     )
-                } else {
-                    Text("グループまたはプロセスを選択してください")
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(minWidth: SplitLayoutConstants.contentColumnMinWidth, maxHeight: .infinity)
+                    
+                    BottomBarHostView(sortBy: monitor.sortBy)
                 }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 4)
+                .navigationSplitViewColumnWidth(
+                    min: SplitLayoutConstants.contentColumnMinWidth,
+                    ideal: SplitLayoutConstants.contentColumnIdealWidth
+                )
+            } detail: {
+                Group {
+                    // 詳細パネル
+                    if let group = selectedGroup {
+                        ProcessGroupDetailView(
+                            group: group,
+                            isTerminating: isTerminating,
+                            onTerminateGroup: { handleTerminate(group: group, force: false) },
+                            onForceTerminateGroup: { handleTerminate(group: group, force: true) }
+                        )
+                    } else if let process = selectedProcess {
+                        ProcessDetailView(
+                            process: process,
+                            isTerminating: isTerminating,
+                            onTerminate: { handleTerminate(process: process, force: false) },
+                            onForceTerminate: { handleTerminate(process: process, force: true) }
+                        )
+                    } else {
+                        VStack {
+                            Spacer()
+                            Text("グループまたはプロセスを選択してください")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(12)
+                    }
+                }
+                .frame(width: SplitLayoutConstants.detailContentWidth)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.vertical, 8)
+                .navigationSplitViewColumnWidth(
+                    min: SplitLayoutConstants.detailColumnWidth,
+                    ideal: SplitLayoutConstants.detailColumnWidth,
+                    max: SplitLayoutConstants.detailColumnWidth
+                )
             }
-            .navigationSplitViewColumnWidth(280)
+            .navigationSplitViewStyle(.prominentDetail)
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(
+            minWidth: SplitLayoutConstants.windowMinWidth,
+            minHeight: SplitLayoutConstants.windowMinHeight
+        )
         .task {
             guard !didLoadInitialProcesses else { return }
             didLoadInitialProcesses = true
@@ -299,6 +333,7 @@ private struct BottomBarHostView: View {
 struct SidebarView: View {
     @ObservedObject var monitor: ProcessMonitor
     @StateObject private var updateService = UpdateService()
+    @FocusState private var isSearchFieldFocused: Bool
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -338,16 +373,45 @@ struct SidebarView: View {
                     .controlSize(.small)
                 }
                 .padding(10)
-                .background(Color.accentColor.opacity(0.08))
-                .cornerRadius(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(.thinMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1)
+                        )
+                )
                 .padding(.horizontal)
             }
             
             Divider()
+                .opacity(0.35)
             
             // 検索フィールド
             TextField("検索...", text: $monitor.filterText)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .focused($isSearchFieldFocused)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(nsColor: .textBackgroundColor).opacity(0.75))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(
+                                    isSearchFieldFocused
+                                        ? Color.accentColor.opacity(0.9)
+                                        : Color.primary.opacity(0.22),
+                                    lineWidth: isSearchFieldFocused ? 1.5 : 1
+                                )
+                        )
+                        .shadow(
+                            color: Color.black.opacity(0.12),
+                            radius: 4,
+                            x: 0,
+                            y: 1
+                        )
+                )
                 .padding(.horizontal)
             
             // ソートオプション
@@ -378,6 +442,7 @@ struct SidebarView: View {
             .padding(.horizontal)
             
             Divider()
+                .opacity(0.35)
             
             // 表示オプション
             Toggle("グループ化表示", isOn: $monitor.showGrouped)
@@ -393,6 +458,7 @@ struct SidebarView: View {
             .padding(.horizontal)
             
             Divider()
+                .opacity(0.35)
             
             // 統計情報
             VStack(alignment: .leading, spacing: 8) {
@@ -426,6 +492,7 @@ struct SidebarView: View {
             
             // 更新ボタン
             Button(action: {
+                guard !monitor.isLoading else { return }
                 Task {
                     await monitor.refreshProcesses()
                 }
@@ -442,6 +509,7 @@ struct SidebarView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
+            .disabled(monitor.isLoading)
             .padding(.horizontal)
             .padding(.bottom)
         }

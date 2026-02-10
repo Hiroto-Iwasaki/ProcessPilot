@@ -4,6 +4,8 @@ struct ProcessRowView: View {
     let process: AppProcessInfo
     let isSelected: Bool
     var isNested: Bool = false
+    var isCompact: Bool = false
+    var widthTier: MetricWidthTier = .wide
     
     var body: some View {
         HStack(spacing: 12) {
@@ -13,14 +15,20 @@ struct ProcessRowView: View {
                     .fill(sourceTintColor.opacity(0.2))
                     .frame(width: 28, height: 28)
                 
-                AsyncProcessIconView(
-                    executablePath: process.executablePath,
-                    imageSize: CGSize(width: 18, height: 18),
-                    cornerRadius: 4
-                ) {
+                if isCompact {
                     Image(systemName: processIcon)
                         .font(.caption)
                         .foregroundColor(sourceTintColor)
+                } else {
+                    AsyncProcessIconView(
+                        executablePath: process.executablePath,
+                        imageSize: CGSize(width: 18, height: 18),
+                        cornerRadius: 4
+                    ) {
+                        Image(systemName: processIcon)
+                            .font(.caption)
+                            .foregroundColor(sourceTintColor)
+                    }
                 }
             }
             
@@ -31,67 +39,90 @@ struct ProcessRowView: View {
                         .fontWeight(.medium)
                         .lineLimit(1)
                     
-                    if shouldShowSourceBadge {
+                    if !isCompact && shouldShowSourceBadge {
                         Text(process.source.rawValue)
                             .font(.caption2)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
-                            .background(sourceBadgeColor.opacity(0.2))
+                            .background(
+                                Capsule()
+                                    .fill(sourceBadgeColor.opacity(0.16))
+                            )
                             .foregroundColor(sourceBadgeColor)
-                            .cornerRadius(3)
                     }
                 }
                 
-                Text(process.description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+                if !isCompact {
+                    Text(process.description)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
             }
             
             Spacer()
             
             // PID
-            Text("PID: \(process.pid)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .monospacedDigit()
+            if isCompact {
+                Text("#\(process.pid)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+            } else {
+                Text("PID: \(process.pid)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .monospacedDigit()
+            }
             
             // リソース使用量
             HStack(spacing: 12) {
-                // CPU
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(String(format: "%.1f%%", process.cpuUsage))
-                        .font(.caption)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .foregroundColor(ProcessDisplayMetrics.cpuColor(for: process.cpuUsage))
+                if !isCompact {
+                    // CPU
+                    VStack(alignment: .trailing, spacing: 2) {
+                        MetricValueLabel(
+                            variants: ProcessDisplayMetrics.cpuTextVariants(usage: process.cpuUsage),
+                            color: ProcessDisplayMetrics.cpuColor(for: process.cpuUsage),
+                            width: MetricLayoutPolicy.processRowMetricValueWidth(for: widthTier)
+                        )
+                        
+                        ProgressView(value: min(process.cpuUsage / 100, 1.0))
+                            .progressViewStyle(.linear)
+                            .frame(width: MetricLayoutPolicy.processRowMetricBarWidth(for: widthTier))
+                            .tint(ProcessDisplayMetrics.cpuColor(for: process.cpuUsage))
+                    }
                     
-                    ProgressView(value: min(process.cpuUsage / 100, 1.0))
-                        .progressViewStyle(.linear)
-                        .frame(width: 50)
-                        .tint(ProcessDisplayMetrics.cpuColor(for: process.cpuUsage))
-                }
-                
-                // メモリ
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(ProcessDisplayMetrics.memoryText(for: process.memoryUsage))
-                        .font(.caption)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .foregroundColor(ProcessDisplayMetrics.memoryColor(for: process.memoryUsage))
-                    
-                    ProgressView(value: min(process.memoryUsage / 8192, 1.0)) // 8GB を 100% とする
-                        .progressViewStyle(.linear)
-                        .frame(width: 50)
-                        .tint(ProcessDisplayMetrics.memoryColor(for: process.memoryUsage))
+                    // メモリ
+                    VStack(alignment: .trailing, spacing: 2) {
+                        MetricValueLabel(
+                            variants: ProcessDisplayMetrics.memoryTextVariants(for: process.memoryUsage),
+                            color: ProcessDisplayMetrics.memoryColor(for: process.memoryUsage),
+                            width: MetricLayoutPolicy.processRowMetricValueWidth(for: widthTier)
+                        )
+                        
+                        ProgressView(value: min(process.memoryUsage / 8192, 1.0)) // 8GB を 100% とする
+                            .progressViewStyle(.linear)
+                            .frame(width: MetricLayoutPolicy.processRowMetricBarWidth(for: widthTier))
+                            .tint(ProcessDisplayMetrics.memoryColor(for: process.memoryUsage))
+                    }
                 }
             }
         }
         .padding(.horizontal, isNested ? 8 : 16)
         .padding(.vertical, 8)
-        .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+        .background(
+            RoundedRectangle(cornerRadius: isNested ? 8 : 10, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.white.opacity(0.03))
+                .overlay(
+                    RoundedRectangle(cornerRadius: isNested ? 8 : 10, style: .continuous)
+                        .strokeBorder(
+                            Color.white.opacity(isSelected ? 0.25 : 0.06),
+                            lineWidth: 1
+                        )
+                )
+        )
+        .padding(.horizontal, isNested ? 2 : 6)
         .contentShape(Rectangle())
     }
     
@@ -142,6 +173,39 @@ struct ProcessRowView: View {
         case .unknown:
             return .gray
         }
+    }
+}
+
+private struct MetricValueLabel: View {
+    let variants: [String]
+    let color: Color
+    let width: CGFloat
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            if let first = displayVariants.first {
+                valueText(first)
+            }
+            if displayVariants.count > 1 {
+                valueText(displayVariants[1])
+            }
+            if displayVariants.count > 2 {
+                valueText(displayVariants[2])
+            }
+        }
+        .frame(width: width, alignment: .trailing)
+    }
+
+    private var displayVariants: [String] {
+        variants.isEmpty ? ["--"] : variants
+    }
+
+    private func valueText(_ value: String) -> some View {
+        Text(value)
+            .font(.caption)
+            .monospacedDigit()
+            .lineLimit(1)
+            .foregroundColor(color)
     }
 }
 

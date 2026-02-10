@@ -7,35 +7,49 @@ struct ProcessListView: View {
     @Binding var selection: ProcessSelection?
     
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                if showGrouped {
-                    // グループ化表示
-                    ForEach(groups) { group in
-                        ProcessGroupView(
-                            group: group,
-                            selection: $selection
-                        )
-                    }
-                } else {
-                    // フラット表示
-                    ForEach(processes) { process in
-                        ProcessRowView(
-                            process: process,
-                            isSelected: selection == .process(process.pid)
-                        )
-                        .onTapGesture {
-                            selection = .process(process.pid)
+        GeometryReader { proxy in
+            let widthTier = MetricLayoutPolicy.tier(
+                forContentWidth: proxy.size.width
+            )
+
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    if showGrouped {
+                        // グループ化表示
+                        ForEach(groups) { group in
+                            ProcessGroupView(
+                                group: group,
+                                selection: $selection,
+                                widthTier: widthTier
+                            )
                         }
-                        
-                        Divider()
-                            .padding(.leading, 16)
+                    } else {
+                        // フラット表示
+                        ForEach(processes) { process in
+                            ProcessRowView(
+                                process: process,
+                                isSelected: selection == .process(process.pid),
+                                widthTier: widthTier
+                            )
+                            .onTapGesture {
+                                selection = .process(process.pid)
+                            }
+                            
+                            Divider()
+                                .padding(.leading, 16)
+                                .opacity(0.35)
+                        }
                     }
                 }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 6)
             }
-            .padding(.vertical, 8)
         }
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Color.clear)
+        .liquidGlassPanel(
+            cornerRadius: 18,
+            tint: Color.cyan.opacity(0.04)
+        )
     }
 }
 
@@ -44,6 +58,7 @@ struct ProcessListView: View {
 struct ProcessGroupView: View {
     let group: ProcessGroup
     @Binding var selection: ProcessSelection?
+    let widthTier: MetricWidthTier
     @State private var isExpanded = false
     
     var body: some View {
@@ -51,7 +66,7 @@ struct ProcessGroupView: View {
             // グループヘッダー
             HStack(spacing: 12) {
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.easeOut(duration: 0.16)) {
                         isExpanded.toggle()
                     }
                 }) {
@@ -99,16 +114,22 @@ struct ProcessGroupView: View {
                         HStack(spacing: 16) {
                             ResourceBadge(
                                 icon: "cpu",
-                                value: String(format: "%.1f%%", group.totalCPU),
+                                valueVariants: ProcessDisplayMetrics.cpuTextVariants(usage: group.totalCPU),
+                                widthTier: widthTier,
                                 color: ProcessDisplayMetrics.cpuColor(for: group.totalCPU)
                             )
                             
                             ResourceBadge(
                                 icon: "memorychip",
-                                value: ProcessDisplayMetrics.memoryText(for: group.totalMemory),
+                                valueVariants: ProcessDisplayMetrics.memoryTextVariants(for: group.totalMemory),
+                                widthTier: widthTier,
                                 color: ProcessDisplayMetrics.memoryColor(for: group.totalMemory)
                             )
                         }
+                        .frame(
+                            width: MetricLayoutPolicy.groupMetricsClusterWidth(for: widthTier),
+                            alignment: .trailing
+                        )
                     }
                     .contentShape(Rectangle())
                 }
@@ -117,26 +138,35 @@ struct ProcessGroupView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .background(
-                selection == .group(group.id)
-                    ? Color.accentColor.opacity(0.12)
-                    : Color(NSColor.controlBackgroundColor)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(
+                        selection == .group(group.id)
+                            ? Color.accentColor.opacity(0.18)
+                            : Color.white.opacity(0.06)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(
+                                Color.white.opacity(selection == .group(group.id) ? 0.24 : 0.08),
+                                lineWidth: 1
+                            )
+                    )
             )
+            .padding(.horizontal, 6)
             
             // 展開時のプロセス一覧
             if isExpanded {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(group.processes) { process in
-                        HStack {
-                            Rectangle()
-                                .fill(Color.clear)
-                                .frame(width: 32)
-                            
-                            ProcessRowView(
-                                process: process,
-                                isSelected: selection == .process(process.pid),
-                                isNested: true
-                            )
-                        }
+                        ProcessRowView(
+                            process: process,
+                            isSelected: selection == .process(process.pid),
+                            isNested: true,
+                            isCompact: true,
+                            widthTier: widthTier
+                        )
+                        .padding(.leading, 30)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .onTapGesture {
                             selection = .process(process.pid)
                         }
@@ -145,10 +175,17 @@ struct ProcessGroupView: View {
                             .padding(.leading, 64)
                     }
                 }
-                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .clipped()
+                .background(Color.white.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(.horizontal, 12)
+                .transition(.opacity)
             }
             
             Divider()
+                .opacity(0.35)
+                .padding(.horizontal, 6)
         }
     }
 }
@@ -157,25 +194,53 @@ struct ProcessGroupView: View {
 
 struct ResourceBadge: View {
     let icon: String
-    let value: String
+    let valueVariants: [String]
+    let widthTier: MetricWidthTier
     let color: Color
     
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             Image(systemName: icon)
                 .font(.caption2)
-            Text(value)
-                .font(.caption)
-                .monospacedDigit()
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+
+            ViewThatFits(in: .horizontal) {
+                if let first = displayVariants.first {
+                    valueText(first)
+                }
+                if displayVariants.count > 1 {
+                    valueText(displayVariants[1])
+                }
+                if displayVariants.count > 2 {
+                    valueText(displayVariants[2])
+                }
+            }
+            .frame(
+                width: MetricLayoutPolicy.resourceBadgeValueWidth(for: widthTier),
+                alignment: .trailing
+            )
         }
-        .layoutPriority(1)
         .foregroundColor(color)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(color.opacity(0.1))
-        .cornerRadius(4)
+        .background(
+            Capsule()
+                .fill(color.opacity(0.09))
+                .overlay(
+                    Capsule()
+                        .strokeBorder(color.opacity(0.35), lineWidth: 0.8)
+                )
+        )
+    }
+
+    private var displayVariants: [String] {
+        valueVariants.isEmpty ? ["--"] : valueVariants
+    }
+
+    private func valueText(_ value: String) -> some View {
+        Text(value)
+            .font(.caption)
+            .monospacedDigit()
+            .lineLimit(1)
     }
 }
 

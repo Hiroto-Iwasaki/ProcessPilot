@@ -8,6 +8,7 @@ struct MainContentBottomBarView: View {
     var body: some View {
         VStack(spacing: 0) {
             Divider()
+                .opacity(0.3)
             
             switch sortBy {
             case .cpu:
@@ -16,7 +17,12 @@ struct MainContentBottomBarView: View {
                 MemoryBottomPanel(metrics: metrics.memory)
             }
         }
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(Color.clear)
+        .padding(.horizontal, 2)
+        .liquidGlassPanel(
+            cornerRadius: 16,
+            tint: Color.white.opacity(0.05)
+        )
     }
 }
 
@@ -30,13 +36,15 @@ private struct CPUBottomPanel: View {
                 metricRow(title: "ユーザ:", value: metrics.userPercent, color: .cyan)
                 
                 Divider()
+                    .opacity(0.35)
                 
                 metricRow(title: "アイドル状態:", value: metrics.idlePercent, color: .primary)
             }
             .padding(16)
-            .frame(width: 200, alignment: .leading)
+            .frame(width: MetricLayoutPolicy.cpuSummaryColumnWidth, alignment: .leading)
             
             Divider()
+                .opacity(0.35)
             
             VStack(alignment: .leading, spacing: 10) {
                 Text("CPU負荷")
@@ -69,7 +77,12 @@ private struct CPUBottomPanel: View {
                 .font(.title3)
                 .fontWeight(.semibold)
             Spacer(minLength: 8)
-            Text(String(format: "%.2f%%", value))
+            Text(
+                ProcessDisplayMetrics.cpuText(
+                    for: value,
+                    decimalPlaces: 2
+                )
+            )
                 .font(.title3)
                 .fontWeight(.semibold)
                 .monospacedDigit()
@@ -101,15 +114,16 @@ private struct MemoryBottomPanel: View {
                 MemoryPressureChart(history: metrics.pressureHistory)
                     .frame(height: 92)
                 
-                Text(String(format: "現在 %.1f%%", metrics.pressurePercent))
+                Text("現在 \(ProcessDisplayMetrics.cpuText(for: metrics.pressurePercent))")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .monospacedDigit()
             }
             .padding(16)
-            .frame(width: 150, alignment: .leading)
+            .frame(width: MetricLayoutPolicy.memoryPressureColumnWidth, alignment: .leading)
             
             Divider()
+                .opacity(0.35)
             
             MemoryMetricColumn(
                 rows: [
@@ -123,12 +137,13 @@ private struct MemoryBottomPanel: View {
             .padding(16)
             
             Divider()
+                .opacity(0.35)
             
             MemoryMetricColumn(
                 rows: [
                     ("アプリメモリ:", ProcessDisplayMetrics.memoryText(for: metrics.appMemoryMB, gbPrecision: 2, mbPrecision: 1)),
                     ("システム固定メモリ:", ProcessDisplayMetrics.memoryText(for: metrics.wiredMemoryMB, gbPrecision: 2, mbPrecision: 1)),
-                    ("圧縮:", ProcessDisplayMetrics.memoryText(for: metrics.compressedMemoryMB, gbPrecision: 2, mbPrecision: 1))
+                    ("メモリ圧縮量:", ProcessDisplayMetrics.memoryText(for: metrics.compressedMemoryMB, gbPrecision: 2, mbPrecision: 1))
                 ]
             )
             .frame(maxWidth: .infinity)
@@ -156,6 +171,7 @@ private struct MemoryMetricColumn: View {
                 
                 if index < rows.count - 1 {
                     Divider()
+                        .opacity(0.35)
                 }
             }
         }
@@ -170,7 +186,7 @@ private struct CPUHistoryChart: View {
         GeometryReader { geometry in
             ZStack {
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.gray.opacity(0.12))
+                    .fill(.thinMaterial)
                 
                 let userPoints = chartPoints(
                     values: userHistory,
@@ -203,7 +219,7 @@ private struct MemoryPressureChart: View {
         GeometryReader { geometry in
             ZStack {
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.gray.opacity(0.12))
+                    .fill(.thinMaterial)
                 
                 let points = chartPoints(values: history, maxValue: 1, size: geometry.size)
                 

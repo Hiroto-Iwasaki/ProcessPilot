@@ -9,37 +9,35 @@ struct ProcessDetailView: View {
     
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                // ヘッダー
-                headerSection
-                
-                Divider()
-                
-                // リソース使用量
-                resourceSection
-                
-                Divider()
-                
-                // プロセス詳細
-                detailSection
-                
-                Divider()
-                
-                // 警告メッセージ
-                if process.isSystemProcess {
-                    warningSection
-                    Divider()
+            VStack(alignment: .leading, spacing: 14) {
+                SidebarSectionCard {
+                    headerSection
                 }
-                
-                // アクションボタン
-                actionSection
-                
-                Spacer()
+
+                SidebarSectionCard(title: "リソース使用量") {
+                    resourceSection
+                }
+
+                SidebarSectionCard(title: "プロセス情報") {
+                    detailSection
+                }
+
+                if process.isSystemProcess {
+                    SidebarSectionCard {
+                        warningSection
+                    }
+                }
+
+                SidebarSectionCard(title: "操作") {
+                    actionSection
+                }
+
+                Spacer(minLength: 8)
             }
-            .padding(24)
+            .padding(20)
         }
-        .frame(minWidth: 280)
-        .background(Color(NSColor.controlBackgroundColor))
+        .background(Color.clear)
+        .padding(10)
         .onChange(of: process.pid) { _ in
             isExecutablePathExpanded = false
         }
@@ -52,8 +50,8 @@ struct ProcessDetailView: View {
             // アイコン
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(sourceTintColor.opacity(0.2))
-                    .frame(width: 56, height: 56)
+                    .fill(sourceTintColor.opacity(0.14))
+                    .frame(width: 58, height: 58)
 
                 if let appIcon = ProcessAppIconProvider.icon(forExecutablePath: process.executablePath) {
                     Image(nsImage: appIcon)
@@ -89,91 +87,42 @@ struct ProcessDetailView: View {
                 Text(process.description)
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+                    .lineLimit(2)
             }
+
+            Spacer(minLength: 0)
         }
     }
     
     // MARK: - Resource Section
     
     private var resourceSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("リソース使用量")
-                .font(.headline)
-            
-            HStack(spacing: 24) {
-                // CPU
-                VStack(spacing: 8) {
-                    ZStack {
-                        Circle()
-                            .stroke(Color.gray.opacity(0.2), lineWidth: 8)
-                            .frame(width: 80, height: 80)
-                        
-                        Circle()
-                            .trim(from: 0, to: min(process.cpuUsage / 100, 1.0))
-                            .stroke(
-                                ProcessDisplayMetrics.cpuColor(for: process.cpuUsage),
-                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                            )
-                            .frame(width: 80, height: 80)
-                            .rotationEffect(.degrees(-90))
-                        
-                        VStack(spacing: 0) {
-                            Text(String(format: "%.1f", process.cpuUsage))
-                                .font(.title3)
-                                .fontWeight(.bold)
-                            Text("%")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    Label("CPU", systemImage: "cpu")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
-                // メモリ
-                VStack(spacing: 8) {
-                    ZStack {
-                        Circle()
-                            .stroke(Color.gray.opacity(0.2), lineWidth: 8)
-                            .frame(width: 80, height: 80)
-                        
-                        Circle()
-                            .trim(from: 0, to: min(process.memoryUsage / 8192, 1.0))
-                            .stroke(
-                                ProcessDisplayMetrics.memoryColor(for: process.memoryUsage),
-                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                            )
-                            .frame(width: 80, height: 80)
-                            .rotationEffect(.degrees(-90))
-                        
-                        VStack(spacing: 0) {
-                            Text(ProcessDisplayMetrics.memoryValue(for: process.memoryUsage))
-                                .font(.title3)
-                                .fontWeight(.bold)
-                            Text(ProcessDisplayMetrics.memoryUnit(for: process.memoryUsage))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    
-                    Label("メモリ", systemImage: "memorychip")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity)
+        HStack(spacing: 20) {
+            SidebarMetricRing(
+                title: "CPU",
+                icon: "cpu",
+                value: ProcessDisplayMetrics.cpuValueText(for: process.cpuUsage),
+                unit: "%",
+                progress: process.cpuUsage / 100,
+                color: cpuRingColor(for: process.cpuUsage)
+            )
+
+            SidebarMetricRing(
+                title: "メモリ",
+                icon: "memorychip",
+                value: ProcessDisplayMetrics.memoryValue(for: process.memoryUsage),
+                unit: ProcessDisplayMetrics.memoryUnit(for: process.memoryUsage),
+                progress: process.memoryUsage / 8192,
+                color: memoryRingColor(for: process.memoryUsage)
+            )
         }
+        .frame(maxWidth: .infinity)
     }
     
     // MARK: - Detail Section
     
     private var detailSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("プロセス情報")
-                .font(.headline)
-            
             DetailRow(label: "PID", value: "\(process.pid)")
             DetailRow(label: "出処", value: process.source.rawValue)
             DetailRow(label: "ユーザー", value: process.user)
@@ -238,18 +187,12 @@ struct ProcessDetailView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .padding()
-        .background(Color.orange.opacity(0.1))
-        .cornerRadius(8)
     }
     
     // MARK: - Action Section
     
     private var actionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("操作")
-                .font(.headline)
-            
             if ProcessDescriptions.isCriticalProcess(process.name) {
                 // 終了不可プロセス
                 Text("このプロセスは終了できません")
@@ -280,11 +223,33 @@ struct ProcessDetailView: View {
                         Label("強制終了", systemImage: "xmark.circle.fill")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .tint(.red)
                     .disabled(isTerminating)
                 }
             }
+        }
+    }
+
+    private func cpuRingColor(for usage: Double) -> Color {
+        switch usage {
+        case ..<40:
+            return .green
+        case ..<80:
+            return .orange
+        default:
+            return .red
+        }
+    }
+
+    private func memoryRingColor(for usageMB: Double) -> Color {
+        switch usageMB {
+        case ..<1024:
+            return .green
+        case ..<4096:
+            return .blue
+        default:
+            return .orange
         }
     }
     
