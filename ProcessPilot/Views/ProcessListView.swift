@@ -199,7 +199,7 @@ struct ResourceBadge: View {
     let color: Color
     
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 2) {
             Image(systemName: icon)
                 .font(.caption2)
 

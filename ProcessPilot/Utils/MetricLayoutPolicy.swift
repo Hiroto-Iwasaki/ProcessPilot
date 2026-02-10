@@ -16,11 +16,11 @@ enum MetricLayoutPolicy {
     static func resourceBadgeValueWidth(for tier: MetricWidthTier) -> CGFloat {
         switch tier {
         case .wide:
-            return 66
+            return 64
         case .regular:
-            return 60
+            return 58
         case .compact:
-            return 54
+            return 52
         }
     }
 

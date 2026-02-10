@@ -10,9 +10,9 @@ final class MetricLayoutPolicyTests: XCTestCase {
     }
 
     func testMetricWidthsForEachTier() {
-        XCTAssertEqual(MetricLayoutPolicy.resourceBadgeValueWidth(for: .wide), 66)
-        XCTAssertEqual(MetricLayoutPolicy.resourceBadgeValueWidth(for: .regular), 60)
-        XCTAssertEqual(MetricLayoutPolicy.resourceBadgeValueWidth(for: .compact), 54)
+        XCTAssertEqual(MetricLayoutPolicy.resourceBadgeValueWidth(for: .wide), 64)
+        XCTAssertEqual(MetricLayoutPolicy.resourceBadgeValueWidth(for: .regular), 58)
+        XCTAssertEqual(MetricLayoutPolicy.resourceBadgeValueWidth(for: .compact), 52)
 
         XCTAssertEqual(MetricLayoutPolicy.processRowMetricValueWidth(for: .wide), 64)
         XCTAssertEqual(MetricLayoutPolicy.processRowMetricValueWidth(for: .regular), 58)
