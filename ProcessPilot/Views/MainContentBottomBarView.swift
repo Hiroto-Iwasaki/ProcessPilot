@@ -129,7 +129,7 @@ private struct MemoryBottomPanel: View {
                 rows: [
                     ("物理メモリ:", ProcessDisplayMetrics.memoryText(for: metrics.physicalMemoryMB, gbPrecision: 2, mbPrecision: 1)),
                     ("使用済みメモリ:", ProcessDisplayMetrics.memoryText(for: metrics.usedMemoryMB, gbPrecision: 2, mbPrecision: 1)),
-                    ("現在利用中（回収可能）:", ProcessDisplayMetrics.memoryText(for: metrics.cachedFilesMB, gbPrecision: 2, mbPrecision: 1)),
+                    ("利用中（回収可能）:", ProcessDisplayMetrics.memoryText(for: metrics.cachedFilesMB, gbPrecision: 2, mbPrecision: 1)),
                     ("メモリからの退避分:", ProcessDisplayMetrics.memoryText(for: metrics.swapUsedMB, gbPrecision: 2, mbPrecision: 1))
                 ]
             )
